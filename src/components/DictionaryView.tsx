@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import { useAuth } from "../context/AuthContext";
-import { getUserItem, setUserItem } from "../utils/userStorage";
+import { getUserItem, setUserItem, persistUserKeyToServer, logUserActivityToServer } from "../utils/userStorage";
 import { DictionaryEntry } from "../types";
 import { ACADEMIC_DICTIONARY_DATA } from "../data/dictionaryData";
 import { speakWithVoice } from "../utils/voiceEngine";
@@ -150,8 +150,20 @@ export const DictionaryView: React.FC = () => {
 
   const toggleBookmark = (id: string) => {
     setBookmarkedWords((prev) => {
-      const next = prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
+      const added = !prev.includes(id);
+      const next = added ? [...prev, id] : prev.filter((item) => item !== id);
       setUserItem(currentUser?.id, "dict_bookmarks", next);
+      persistUserKeyToServer(currentUser?.id, "dict_bookmarks", next);
+      if (currentUser?.id) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "dictionary",
+          action: added ? "WORD_BOOKMARKED" : "WORD_UNBOOKMARKED",
+          details: `${added ? "Bookmarked" : "Unbookmarked"} dictionary term "${id}"`,
+        });
+      }
       return next;
     });
   };
@@ -162,6 +174,7 @@ export const DictionaryView: React.FC = () => {
     setRecentSearches((prev) => {
       const next = [clean, ...prev.filter((item) => item.toLowerCase() !== clean.toLowerCase())].slice(0, 8);
       setUserItem(currentUser?.id, "dict_recents", next);
+      persistUserKeyToServer(currentUser?.id, "dict_recents", next);
       return next;
     });
   };
@@ -353,8 +366,19 @@ export const DictionaryView: React.FC = () => {
           setSelectedGradeBand("all");
 
           setDynamicEntries((prev) => {
-            const next = [newEntry, ...prev.filter((e) => e.word.toLowerCase() !== newEntry.word.toLowerCase())];
-            setUserItem(currentUser?.id, "dict_custom_words", next.slice(0, 50));
+            const next = [newEntry, ...prev.filter((e) => e.word.toLowerCase() !== newEntry.word.toLowerCase())].slice(0, 50);
+            setUserItem(currentUser?.id, "dict_custom_words", next);
+            persistUserKeyToServer(currentUser?.id, "dict_custom_words", next);
+            if (currentUser?.id) {
+              logUserActivityToServer({
+                userId: currentUser.id,
+                userEmail: currentUser.email,
+                userName: currentUser.name,
+                feature: "dictionary",
+                action: "DICTIONARY_AI_LOOKUP",
+                details: `Looked up academic term "${newEntry.word}"`,
+              });
+            }
             return next;
           });
           setActiveWordEntry(newEntry);

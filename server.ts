@@ -2,7 +2,6 @@ import express from "express";
 import compression from "compression";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { PAKISTANI_LECTURES } from "./src/data/pakistaniLecturesData";
 
@@ -12,6 +11,14 @@ const PORT = process.env.NODE_ENV === "production" && process.env.PORT ? Number(
 // High-speed HTTP response compression (gzip/deflate) to minimize payload transfer latency
 app.use(compression());
 app.use(express.json({ limit: "20mb" }));
+
+// Normalize Netlify Function invocation paths (e.g. /.netlify/functions/api/...) to /api/...
+app.use((req, _res, next) => {
+  if (req.url.startsWith("/.netlify/functions/api")) {
+    req.url = req.url.replace(/^\/\.netlify\/functions\/api/, "/api") || "/api";
+  }
+  next();
+});
 
 // In-Memory Fast Cache with LRU eviction and TTL for sub-millisecond repeated responses
 class FastCache<T> {
@@ -4814,7 +4821,8 @@ Output STRICTLY valid JSON with no markdown formatting.`;
 // ============================================================================
 // PERSISTENT USER REGISTRY & STUDENT SYNCHRONIZATION SYSTEM
 // ============================================================================
-const DATA_DIR = path.join(process.cwd(), "data");
+const IS_SERVERLESS = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = IS_SERVERLESS ? "/tmp/data" : path.join(process.cwd(), "data");
 const USERS_FILE = path.join(DATA_DIR, "users_db.json");
 const USER_STATES_FILE = path.join(DATA_DIR, "user_states.json");
 
@@ -5196,6 +5204,8 @@ app.post("/api/users/heartbeat", (req, res) => {
 // Start Server with Vite Middleware in Dev or Static in Production
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const vitePkg = "vite";
+    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: "spa",
@@ -5214,4 +5224,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!IS_SERVERLESS) {
+  startServer();
+}
+
+export { app };
+export default app;

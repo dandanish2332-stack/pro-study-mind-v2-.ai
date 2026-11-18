@@ -17,6 +17,8 @@ import {
   VoicePersonaId,
   AttachedFile,
   VoiceConversationMessage,
+  PlatformSettings,
+  ServerAnnouncement,
 } from "../types";
 import { speakWithVoice, FIRST_TIME_VOICE_GREETINGS, getVoiceModeInitialGreeting } from "../utils/voiceEngine";
 import {
@@ -31,7 +33,7 @@ import {
 } from "../data/initialData";
 import { t } from "../utils/i18n";
 import { useAuth } from "./AuthContext";
-import { getUserItem, setUserItem } from "../utils/userStorage";
+import { getUserItem, setUserItem, logUserActivityToServer } from "../utils/userStorage";
 
 interface AppContextType {
   language: Language;
@@ -112,11 +114,25 @@ interface AppContextType {
   setCustomVoiceURI: (uri: string) => void;
   speakBunny: (text: string, onStart?: () => void, onEnd?: () => void) => void;
 
+  // Platform Governance Settings (from backend)
+  platformSettings: PlatformSettings | null;
+  refreshPlatformSettings: () => Promise<void>;
+  syncAnnouncementsNow: () => Promise<void>;
+
   // Helper
   tr: (key: string) => string;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+function persistSliceToServer(userId: string | undefined, state: Record<string, any>) {
+  if (!userId) return;
+  fetch("/api/users/save-state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId, state }),
+  }).catch(() => {});
+}
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
@@ -125,6 +141,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [theme, setTheme] = useState<Theme>("dark");
   const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [platformSettings, setPlatformSettings] = useState<PlatformSettings | null>(null);
 
   // Files & Reports (Isolated per student account)
   const [files, setFiles] = useState<FileItem[]>(() => {
@@ -237,7 +254,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 5. User Voice Conversation History (Fresh for new account)
     const existingVoice = getUserItem<VoiceConversationMessage[] | null>(userId, "voice_history", null);
     if (existingVoice === null) {
-      const { text: introText } = getVoiceModeInitialGreeting(language);
       const freshVoice: VoiceConversationMessage = {
         id: `vm-welcome-${Date.now()}`,
         sender: "ai",
@@ -249,7 +265,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       setVoiceConversationHistory(existingVoice);
     }
+
+    // 6. User AI Chat History (Isolated per account)
+    const existingChats = getUserItem<ChatMessage[] | null>(userId, "chat_history", null);
+    if (existingChats && existingChats.length > 0) {
+      setChatMessages(existingChats);
+    } else {
+      const welcomeChat: ChatMessage[] = [
+        {
+          id: "m-1",
+          sender: "ai",
+          text: "Hey, I am an AI agent created by Danish. How can I help you today?",
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        },
+      ];
+      setChatMessages(welcomeChat);
+      setUserItem(userId, "chat_history", welcomeChat);
+    }
   }, [currentUser?.id, currentUser?.grade, currentUser?.name]);
+
+  const syncAnnouncementsNow = useCallback(async () => {
+    const userId = currentUser?.id;
+    if (!userId) return;
+    try {
+      const res = await fetch("/api/announcements");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data?.success || !Array.isArray(data.announcements)) return;
+
+      const seenIds = getUserItem<string[]>(userId, "seen_announcement_ids", []);
+      const unseen = (data.announcements as ServerAnnouncement[]).filter(
+        (ann) =>
+          !seenIds.includes(ann.id) &&
+          (ann.targetGrade === "All Levels" ||
+            ann.targetGrade === currentUser?.grade ||
+            currentUser?.isAdmin)
+      );
+      if (unseen.length > 0) {
+        const newNotifs: NotificationItem[] = unseen.map((ann) => ({
+          id: `srv-${ann.id}`,
+          title: `[Broadcast] ${ann.title}`,
+          message: ann.message,
+          timestamp: new Date(ann.createdAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          type: ann.type || "info",
+          read: false,
+        }));
+        const updatedSeen = [...seenIds, ...unseen.map((a) => a.id)];
+        setUserItem(userId, "seen_announcement_ids", updatedSeen);
+        setNotifications((prev) => {
+          const existingIds = new Set(prev.map((n) => n.id));
+          const uniqueNew = newNotifs.filter((n) => !existingIds.has(n.id));
+          if (uniqueNew.length === 0) return prev;
+          const merged = [...uniqueNew, ...prev];
+          setUserItem(userId, "notifications", merged);
+          return merged;
+        });
+      }
+    } catch {
+      // ignore offline
+    }
+  }, [currentUser?.id, currentUser?.grade, currentUser?.isAdmin]);
+
+  // Pull unseen server broadcasts on login and listen for admin state mutations
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId) return;
+
+    syncAnnouncementsNow();
+
+    const handleStateUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ userId?: string }>).detail;
+      if (!detail?.userId || detail.userId === userId) {
+        setTasks(getUserItem<TaskItem[]>(userId, "tasks", []));
+        setFiles(getUserItem<FileItem[]>(userId, "files", []));
+        setCalendarEvents(getUserItem<CalendarEvent[]>(userId, "calendar", []));
+        setNotifications(getUserItem<NotificationItem[]>(userId, "notifications", []));
+        const updatedVoice = getUserItem<VoiceConversationMessage[]>(userId, "voice_history", []);
+        if (Array.isArray(updatedVoice)) setVoiceConversationHistory(updatedVoice);
+        const updatedChats = getUserItem<ChatMessage[]>(userId, "chat_history", []);
+        if (Array.isArray(updatedChats) && updatedChats.length > 0) setChatMessages(updatedChats);
+        syncAnnouncementsNow();
+      }
+    };
+
+    window.addEventListener("prostudymind:user-state-updated", handleStateUpdated);
+    return () => {
+      window.removeEventListener("prostudymind:user-state-updated", handleStateUpdated);
+    };
+  }, [currentUser?.id, syncAnnouncementsNow]);
+
+  const refreshPlatformSettings = useCallback(async () => {
+    try {
+      const res = await fetch("/api/platform-settings");
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success && data.settings) {
+          setPlatformSettings(data.settings);
+        }
+      }
+    } catch {
+      // ignore offline
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshPlatformSettings();
+    const interval = setInterval(() => {
+      refreshPlatformSettings();
+      syncAnnouncementsNow();
+    }, 30000);
+    const onFocus = () => {
+      refreshPlatformSettings();
+      syncAnnouncementsNow();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [refreshPlatformSettings, syncAnnouncementsNow]);
 
   const addVoiceConversationTurn = (turn: { userText: string; aiText: string; actionTaken?: string }) => {
     const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -269,6 +406,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setVoiceConversationHistory((prev) => {
       const next = [...prev, userMsg, aiMsg];
       setUserItem(currentUser?.id, "voice_history", next);
+      persistSliceToServer(currentUser?.id, { voice_history: next });
+      if (currentUser?.id) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "voice",
+          action: "VOICE_TURN",
+          details: `Voice assistant query: "${turn.userText.slice(0, 80)}"`,
+        });
+      }
       return next;
     });
   };
@@ -283,6 +431,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setVoiceConversationHistory([freshMsg]);
     setUserItem(currentUser?.id, "voice_history", [freshMsg]);
+    persistSliceToServer(currentUser?.id, { voice_history: [freshMsg] });
   };
 
   // Multi Voice Persona State (Default: Natural Man)
@@ -314,7 +463,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
 
   const startNewChat = () => {
-    setChatMessages([getInitialChatMessage(language)]);
+    const fresh = [getInitialChatMessage(language)];
+    setChatMessages(fresh);
+    setUserItem(currentUser?.id, "chat_history", fresh);
+    persistSliceToServer(currentUser?.id, { chat_history: fresh });
   };
 
   // Handle Online / Offline detection
@@ -355,6 +507,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setFiles((prev) => {
       const next = [file, ...prev];
       setUserItem(currentUser?.id, "files", next);
+      persistSliceToServer(currentUser?.id, { files: next });
+      if (currentUser?.id) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "files",
+          action: "FILE_ADDED",
+          details: `Added file "${file.name}"`,
+        });
+      }
       return next;
     });
     triggerCloudSync();
@@ -364,6 +527,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setFiles((prev) => {
       const next = prev.filter((f) => f.id !== id);
       setUserItem(currentUser?.id, "files", next);
+      persistSliceToServer(currentUser?.id, { files: next });
       return next;
     });
   };
@@ -447,6 +611,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCalendarEvents((prev) => {
       const next = [...prev, newEv];
       setUserItem(currentUser?.id, "calendar", next);
+      persistSliceToServer(currentUser?.id, { calendar: next });
+      if (currentUser?.id) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "calendar",
+          action: "CALENDAR_EVENT_ADDED",
+          details: `Scheduled "${newEv.title}"`,
+        });
+      }
       return next;
     });
     triggerCloudSync();
@@ -456,6 +631,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCalendarEvents((prev) => {
       const next = prev.filter((e) => e.id !== id);
       setUserItem(currentUser?.id, "calendar", next);
+      persistSliceToServer(currentUser?.id, { calendar: next });
       return next;
     });
   };
@@ -468,6 +644,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTasks((prev) => {
       const next = [newTask, ...prev];
       setUserItem(currentUser?.id, "tasks", next);
+      persistSliceToServer(currentUser?.id, { tasks: next });
+      if (currentUser?.id) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "tasks",
+          action: "TASK_CREATED",
+          details: `Created task "${newTask.title}"`,
+        });
+      }
       return next;
     });
     triggerCloudSync();
@@ -487,6 +674,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return t;
       });
       setUserItem(currentUser?.id, "tasks", next);
+      persistSliceToServer(currentUser?.id, { tasks: next });
       return next;
     });
   };
@@ -675,6 +863,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNotifications((prev) => {
       const next = prev.map((n) => (n.id === id ? { ...n, read: true } : n));
       setUserItem(currentUser?.id, "notifications", next);
+      persistSliceToServer(currentUser?.id, { notifications: next });
       return next;
     });
   };
@@ -682,6 +871,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const clearAllNotifications = () => {
     setNotifications([]);
     setUserItem(currentUser?.id, "notifications", []);
+    persistSliceToServer(currentUser?.id, { notifications: [] });
   };
 
   const addNotification = useCallback((notif: Omit<NotificationItem, "id" | "timestamp" | "read">) => {
@@ -694,6 +884,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNotifications((prev) => {
       const next = [newN, ...prev];
       setUserItem(currentUser?.id, "notifications", next);
+      persistSliceToServer(currentUser?.id, { notifications: next });
       return next;
     });
 
@@ -725,7 +916,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } : undefined,
     };
 
-    setChatMessages((prev) => [...prev, userMsg]);
+    setChatMessages((prev) => {
+      const next = [...prev, userMsg];
+      setUserItem(currentUser?.id, "chat_history", next);
+      return next;
+    });
 
     try {
       const res = await fetch("/api/ai/chat", {
@@ -753,11 +948,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const aiMsg: ChatMessage = {
         id: "m-" + (Date.now() + 1),
         sender: "ai",
-        text: data.reply || "I have received your request and study data.",
+        text: data.reply || data.error || "I have received your request and study data.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         generatedMedia: data.generatedMedia || undefined,
       };
-      setChatMessages((prev) => [...prev, aiMsg]);
+      setChatMessages((prev) => {
+        const next = [...prev, aiMsg];
+        setUserItem(currentUser?.id, "chat_history", next);
+        persistSliceToServer(currentUser?.id, { chat_history: next });
+        if (currentUser?.id) {
+          logUserActivityToServer({
+            userId: currentUser.id,
+            userEmail: currentUser.email,
+            userName: currentUser.name,
+            feature: "ai",
+            action: "AI_CHAT_MESSAGE",
+            details: `Asked AI Tutor: "${text.slice(0, 80)}"`,
+          });
+        }
+        return next;
+      });
     } catch (e) {
       const lower = text.toLowerCase();
       let fallbackText = `I received your message${attachment ? ` and file "${attachment.name}"` : ""} in ${language}. Study notes and assistant tools are ready!`;
@@ -777,7 +987,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         text: fallbackText,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
-      setChatMessages((prev) => [...prev, aiMsg]);
+      setChatMessages((prev) => {
+        const next = [...prev, aiMsg];
+        setUserItem(currentUser?.id, "chat_history", next);
+        persistSliceToServer(currentUser?.id, { chat_history: next });
+        return next;
+      });
     }
   };
 
@@ -845,6 +1060,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       customVoiceURI,
       setCustomVoiceURI,
       speakBunny,
+      platformSettings,
+      refreshPlatformSettings,
+      syncAnnouncementsNow,
       tr,
     }),
     [
@@ -875,6 +1093,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       selectedVoicePersona,
       customVoiceURI,
       speakBunny,
+      platformSettings,
+      refreshPlatformSettings,
+      syncAnnouncementsNow,
       tr,
     ]
   );

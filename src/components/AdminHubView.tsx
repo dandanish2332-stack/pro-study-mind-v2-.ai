@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import {
   ShieldCheck,
   ShieldAlert,
@@ -12,23 +12,13 @@ import {
   Edit3,
   UserPlus,
   Download,
-  Filter,
+  Upload,
   CheckCircle2,
   Clock,
-  BookOpen,
-  Sparkles,
-  Layers,
-  GraduationCap,
-  KeyRound,
-  Mail,
-  School,
-  Flame,
-  Award,
   RefreshCw,
   X,
   AlertTriangle,
   Activity,
-  Radio,
   FileDown,
   Brain,
   Calendar,
@@ -39,17 +29,66 @@ import {
   Volume2,
   Sliders,
   RotateCcw,
-  Target,
   CheckSquare,
+  Award,
+  KeyRound,
+  Megaphone,
+  Server,
+  Database,
+  ScrollText,
+  Zap,
+  HardDrive,
+  Send,
+  Sparkles,
+  BookOpen,
+  Video,
+  Bell,
+  MessageSquare,
+  Code2,
+  Flame,
+  Phone,
+  UserCheck,
+  Mail,
+  Inbox,
+  LogIn,
+  FileSpreadsheet,
+  FileJson,
+  Unlink,
+  Link2,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
-import { AdminUserProgressDetails, StudentGrade } from "../types";
+import { useApp } from "../context/AppContext";
+import {
+  getGoogleAccessToken,
+  getGoogleCurrentUser,
+  googleLogout,
+  googleSignIn,
+  initGoogleAuth,
+} from "../utils/googleAuth";
+import {
+  AdminAuditLog,
+  AdminLogsSummary,
+  AdminServerOverview,
+  AdminUserProgressDetails,
+  EmailDispatchLog,
+  GmailMessageDetail,
+  GmailMessageSummary,
+  PlatformSettings,
+  ServerAnnouncement,
+  StudentGrade,
+  UserActivityLog,
+} from "../types";
 
 interface AdminHubViewProps {
   setActiveTab?: (tab: string) => void;
 }
 
+type AdminSectionTab = "users" | "gmail" | "broadcasts" | "backend" | "logs";
+type LogStreamTab = "audit" | "auth" | "activity" | "email" | "errors";
+
 const GRADE_OPTIONS: StudentGrade[] = [
+  "Class 9",
+  "Class 10",
   "9th Class",
   "10th Class",
   "11th Class",
@@ -59,39 +98,75 @@ const GRADE_OPTIONS: StudentGrade[] = [
   "MDCAT & ECAT Entry Test",
   "General / College",
   "All Levels",
+  "All Levels (Master Admin)",
 ];
+
+function formatUptime(seconds: number): string {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
   const {
-    currentUser,
     isAdmin,
+    dataVersion,
     getAllUsersForAdmin,
     getStudentFullDetails,
     deleteUserByAdmin,
     updateUserByAdmin,
     createUserByAdmin,
     addStudentTaskByAdmin,
+    toggleStudentTaskByAdmin,
     deleteStudentTaskByAdmin,
     resetStudentIsolatedDataByAdmin,
+    grantStudentXpByAdmin,
+    addStudentCalendarEventByAdmin,
+    deleteStudentCalendarEventByAdmin,
+    broadcastAnnouncementByAdmin,
     impersonateStudent,
     refreshAdminUsersList,
+    fetchStudentLiveDetailsByAdmin,
+    sendDirectNotificationByAdmin,
+    deleteStudentFileByAdmin,
+    deleteStudentPdfByAdmin,
+    updateStudentStudyStatsByAdmin,
   } = useAuth();
+  const { refreshPlatformSettings, syncAnnouncementsNow } = useApp();
 
+  const [sectionTab, setSectionTab] = useState<AdminSectionTab>("users");
+
+  // Users directory state
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "online" | "offline">("all");
   const [gradeFilter, setGradeFilter] = useState<string>("all");
-  const [showAllPasswords, setShowAllPasswords] = useState<boolean>(true);
+  const [showAllPasswords, setShowAllPasswords] = useState<boolean>(false);
   const [visiblePasswords, setVisiblePasswords] = useState<{ [userId: string]: boolean }>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Modals state
   const [inspectUser, setInspectUser] = useState<AdminUserProgressDetails | null>(null);
-  const [inspectTab, setInspectTab] = useState<"settings" | "tasks" | "files" | "calendar" | "notes" | "gaming">("settings");
+  const [inspectTab, setInspectTab] = useState<
+    "overview" | "settings" | "tasks" | "files" | "calendar" | "learning" | "activity" | "gaming"
+  >("overview");
+  const [isRefreshingInspect, setIsRefreshingInspect] = useState<boolean>(false);
+  const [inspectLastSyncedAt, setInspectLastSyncedAt] = useState<string>("");
+  const [showRawJson, setShowRawJson] = useState<boolean>(false);
   const [editUser, setEditUser] = useState<AdminUserProgressDetails | null>(null);
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
   const [deleteConfirmUser, setDeleteConfirmUser] = useState<AdminUserProgressDetails | null>(null);
+  const [confirmResetUser, setConfirmResetUser] = useState<AdminUserProgressDetails | null>(null);
 
-  // Form states for Inspect User separate settings
+  // Inspect User Settings form
   const [inspectEditName, setInspectEditName] = useState("");
   const [inspectEditEmail, setInspectEditEmail] = useState("");
   const [inspectEditPassword, setInspectEditPassword] = useState("");
@@ -100,29 +175,46 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
   const [inspectEditTargetExam, setInspectEditTargetExam] = useState("");
   const [inspectEditSubject, setInspectEditSubject] = useState("Biology");
   const [inspectEditGoalHours, setInspectEditGoalHours] = useState(3);
+  const [inspectEditPhone, setInspectEditPhone] = useState("");
+  const [inspectEditBio, setInspectEditBio] = useState("");
   const [isSavingInspectSettings, setIsSavingInspectSettings] = useState(false);
   const [inspectSettingsSuccess, setInspectSettingsSuccess] = useState<string | null>(null);
   const [inspectSettingsError, setInspectSettingsError] = useState<string | null>(null);
   const [showInspectPassword, setShowInspectPassword] = useState(true);
 
-  // New task form for student
-  const [newTaskTitle, setNewTaskTitle] = useState("");
-  const [newTaskPriority, setNewTaskPriority] = useState<"urgent" | "high" | "medium" | "low">("high");
-  const [newTaskCategory, setNewTaskCategory] = useState("General Study");
-  const [newTaskDueDate, setNewTaskDueDate] = useState("");
+  // Inspect User Direct Notification & Study Stats forms
+  const [directNotifTitle, setDirectNotifTitle] = useState("");
+  const [directNotifMessage, setDirectNotifMessage] = useState("");
+  const [directNotifType, setDirectNotifType] = useState<"info" | "urgent" | "reminder" | "security">("info");
+  const [isSendingDirectNotif, setIsSendingDirectNotif] = useState(false);
+  const [editStreakValue, setEditStreakValue] = useState<number>(0);
+  const [editXpValue, setEditXpValue] = useState<number>(0);
+  const [editLevelValue, setEditLevelValue] = useState<number>(1);
+  const [editRankTitle, setEditRankTitle] = useState<string>("Novice Scholar");
+  const [isSavingStudyStats, setIsSavingStudyStats] = useState(false);
 
-  // Form states for Create User
+  // Inspect User New Task, Calendar Event, Custom XP
+  const [taskInspectFilter, setTaskInspectFilter] = useState<"all" | "pending" | "completed">("all");
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTaskCategory, setNewTaskCategory] = useState("General Study");
+  const [newTaskPriority, setNewTaskPriority] = useState<"urgent" | "high" | "medium" | "low">("high");
+  const [newTaskDueDate, setNewTaskDueDate] = useState("");
+  const [newEventTitle, setNewEventTitle] = useState("");
+  const [newEventDate, setNewEventDate] = useState("");
+  const [newEventCategory, setNewEventCategory] = useState<"work" | "personal" | "meeting" | "deadline">("work");
+  const [customXpAmount, setCustomXpAmount] = useState<number>(100);
+
+  // Create User form
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserGrade, setNewUserGrade] = useState<StudentGrade>("11th Class");
   const [newUserSchool, setNewUserSchool] = useState("");
   const [newUserTargetExam, setNewUserTargetExam] = useState("BISE Annual Board Examinations 2026");
-  const [newUserSubject, setNewUserSubject] = useState("Biology");
   const [createError, setCreateError] = useState<string | null>(null);
   const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
 
-  // Form states for Edit User
+  // Edit User form
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPassword, setEditPassword] = useState("");
@@ -132,22 +224,290 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
   const [editError, setEditError] = useState<string | null>(null);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
 
-  // Notifications/Toasts
-  const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
+  // Broadcasts state
+  const [announcements, setAnnouncements] = useState<ServerAnnouncement[]>([]);
+  const [isLoadingAnnouncements, setIsLoadingAnnouncements] = useState(false);
+  const [broadcastTitle, setBroadcastTitle] = useState("");
+  const [broadcastMessage, setBroadcastMessage] = useState("");
+  const [broadcastType, setBroadcastType] = useState<ServerAnnouncement["type"]>("urgent");
+  const [broadcastGrade, setBroadcastGrade] = useState<string>("All Levels");
+  const [isSendingBroadcast, setIsSendingBroadcast] = useState(false);
 
-  const showSuccessNotice = (msg: string) => {
-    setActionSuccessMsg(msg);
-    setTimeout(() => setActionSuccessMsg(null), 3500);
-  };
+  // Backend Server Telemetry & Settings state
+  const [overview, setOverview] = useState<AdminServerOverview | null>(null);
+  const [isLoadingOverview, setIsLoadingOverview] = useState(false);
+  const [settingsForm, setSettingsForm] = useState<PlatformSettings | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState<string | null>(null);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+
+  // Multi-stream logs & telemetry state
+  const [logStream, setLogStream] = useState<LogStreamTab>("audit");
+  const [logsSummary, setLogsSummary] = useState<AdminLogsSummary | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
+  const [authLogs, setAuthLogs] = useState<AdminAuditLog[]>([]);
+  const [activityLogs, setActivityLogs] = useState<UserActivityLog[]>([]);
+  const [apiErrorLogs, setApiErrorLogs] = useState<
+    { timestamp: string; route: string; statusCode: number; message: string }[]
+  >([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [logCategoryFilter, setLogCategoryFilter] = useState<string>("all");
+  const [activityFeatureFilter, setActivityFeatureFilter] = useState<string>("all");
+  const [logSearch, setLogSearch] = useState("");
+  const [confirmClearStream, setConfirmClearStream] = useState<"audit" | "activity" | "email" | "errors" | null>(null);
+
+  // Google Workspace Gmail Hub state
+  const [gmailConnected, setGmailConnected] = useState<boolean>(() => Boolean(getGoogleAccessToken()));
+  const [gmailAuthEmail, setGmailAuthEmail] = useState<string | null>(
+    () => getGoogleCurrentUser()?.email || null
+  );
+  const [isConnectingGmail, setIsConnectingGmail] = useState(false);
+  const [gmailProfile, setGmailProfile] = useState<{
+    emailAddress?: string;
+    messagesTotal?: number;
+    threadsTotal?: number;
+    historyId?: string;
+  } | null>(null);
+  const [gmailMessages, setGmailMessages] = useState<GmailMessageSummary[]>([]);
+  const [gmailQuery, setGmailQuery] = useState("");
+  const [isLoadingGmail, setIsLoadingGmail] = useState(false);
+  const [gmailError, setGmailError] = useState<string | null>(null);
+  const [selectedGmailMsg, setSelectedGmailMsg] = useState<GmailMessageDetail | null>(null);
+  const [isLoadingGmailDetail, setIsLoadingGmailDetail] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [confirmSendEmailOpen, setConfirmSendEmailOpen] = useState(false);
+  const [emailLogs, setEmailLogs] = useState<EmailDispatchLog[]>([]);
+  const [isLoadingEmailLogs, setIsLoadingEmailLogs] = useState(false);
+
+  // Feedback banners (replaces browser alert)
+  const [actionToast, setActionToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
+    setActionToast({ type, message });
+    setTimeout(() => setActionToast(null), 4000);
+  }, []);
+
+  useEffect(() => {
+    const unsub = initGoogleAuth(
+      (user) => {
+        setGmailAuthEmail(user.email || null);
+        setGmailConnected(Boolean(getGoogleAccessToken()));
+      },
+      () => {
+        setGmailAuthEmail(null);
+        setGmailConnected(false);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  const fetchServerOverview = useCallback(async () => {
+    setIsLoadingOverview(true);
+    try {
+      const res = await fetch("/api/admin/overview");
+      const data = await res.json();
+      if (res.ok && data.success && data.overview) {
+        setOverview(data.overview);
+        setSettingsForm(data.overview.settings);
+      }
+    } catch {
+      showToast("Could not reach backend telemetry endpoint.", "error");
+    } finally {
+      setIsLoadingOverview(false);
+    }
+  }, [showToast]);
+
+  const fetchAnnouncements = useCallback(async () => {
+    setIsLoadingAnnouncements(true);
+    try {
+      const res = await fetch("/api/announcements");
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.announcements)) {
+        setAnnouncements(data.announcements);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingAnnouncements(false);
+    }
+  }, []);
+
+  const fetchEmailLogs = useCallback(async (q?: string) => {
+    setIsLoadingEmailLogs(true);
+    try {
+      const url = `/api/admin/email-logs?limit=150${q ? `&q=${encodeURIComponent(q)}` : ""}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.logs)) {
+        setEmailLogs(data.logs);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingEmailLogs(false);
+    }
+  }, []);
+
+  const fetchGmailProfile = useCallback(async (tokenOverride?: string) => {
+    const token = tokenOverride || getGoogleAccessToken();
+    if (!token) {
+      setGmailConnected(false);
+      return;
+    }
+    try {
+      const res = await fetch("/api/gmail/profile", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (res.status === 401) {
+        setGmailConnected(false);
+        setGmailError("Gmail session expired. Please click 'Sign in with Google' to reconnect.");
+        return;
+      }
+      if (res.ok && data.success && data.profile) {
+        setGmailProfile(data.profile);
+        setGmailAuthEmail(data.profile.emailAddress || null);
+        setGmailConnected(true);
+        setGmailError(null);
+      } else {
+        setGmailError(data.error || "Could not load Gmail profile.");
+      }
+    } catch {
+      setGmailError("Network error contacting Gmail API proxy.");
+    }
+  }, []);
+
+  const fetchGmailMessages = useCallback(async (queryOverride?: string, tokenOverride?: string) => {
+    const token = tokenOverride || getGoogleAccessToken();
+    if (!token) {
+      setGmailConnected(false);
+      return;
+    }
+    setIsLoadingGmail(true);
+    setGmailError(null);
+    try {
+      const q = queryOverride !== undefined ? queryOverride : gmailQuery;
+      const res = await fetch(
+        `/api/gmail/messages?maxResults=15${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ""}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      if (res.status === 401) {
+        setGmailConnected(false);
+        setGmailError("Gmail authorization expired. Reconnect with Google to view inbox.");
+        return;
+      }
+      if (res.ok && data.success && Array.isArray(data.messages)) {
+        setGmailMessages(data.messages);
+      } else {
+        setGmailError(data.error || "Failed to fetch Gmail messages.");
+      }
+    } catch {
+      setGmailError("Network error loading Gmail inbox.");
+    } finally {
+      setIsLoadingGmail(false);
+    }
+  }, [gmailQuery]);
+
+  const fetchLogsSummary = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/logs/summary");
+      const data = await res.json();
+      if (res.ok && data.success && data.summary) {
+        setLogsSummary(data.summary);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const fetchActiveLogStream = useCallback(async () => {
+    setIsLoadingLogs(true);
+    try {
+      if (logStream === "audit") {
+        const res = await fetch(`/api/admin/audit-logs?category=${encodeURIComponent(logCategoryFilter)}&limit=150`);
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.logs)) setAuditLogs(data.logs);
+      } else if (logStream === "auth") {
+        const res = await fetch(`/api/admin/logs/auth?limit=150${logSearch.trim() ? `&q=${encodeURIComponent(logSearch.trim())}` : ""}`);
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.logs)) setAuthLogs(data.logs);
+      } else if (logStream === "activity") {
+        const res = await fetch(
+          `/api/admin/logs/activity?feature=${encodeURIComponent(activityFeatureFilter)}&limit=200${
+            logSearch.trim() ? `&q=${encodeURIComponent(logSearch.trim())}` : ""
+          }`
+        );
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.logs)) setActivityLogs(data.logs);
+      } else if (logStream === "email") {
+        await fetchEmailLogs(logSearch.trim() || undefined);
+      } else if (logStream === "errors") {
+        const res = await fetch("/api/admin/logs/errors");
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.errors)) setApiErrorLogs(data.errors);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }, [logStream, logCategoryFilter, activityFeatureFilter, logSearch, fetchEmailLogs]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (sectionTab === "users") {
+      refreshAdminUsersList();
+    } else if (sectionTab === "gmail") {
+      fetchEmailLogs();
+      const token = getGoogleAccessToken();
+      if (token) {
+        setGmailConnected(true);
+        fetchGmailProfile(token);
+        fetchGmailMessages(undefined, token);
+      }
+    } else if (sectionTab === "backend") {
+      fetchServerOverview();
+      const timer = setInterval(fetchServerOverview, 15000);
+      return () => clearInterval(timer);
+    } else if (sectionTab === "broadcasts") {
+      fetchAnnouncements();
+    } else if (sectionTab === "logs") {
+      fetchLogsSummary();
+      fetchActiveLogStream();
+      const timer = setInterval(() => {
+        fetchLogsSummary();
+        fetchActiveLogStream();
+      }, 15000);
+      return () => clearInterval(timer);
+    }
+  }, [
+    isAdmin,
+    sectionTab,
+    refreshAdminUsersList,
+    fetchEmailLogs,
+    fetchGmailProfile,
+    fetchGmailMessages,
+    fetchServerOverview,
+    fetchAnnouncements,
+    fetchLogsSummary,
+    fetchActiveLogStream,
+  ]);
 
   const usersList = useMemo(() => {
     return getAllUsersForAdmin();
-  }, [getAllUsersForAdmin]);
+  }, [getAllUsersForAdmin, dataVersion]);
 
-  // Filtered users
+  const liveInspectUser = useMemo(() => {
+    if (!inspectUser) return null;
+    return usersList.find((u) => u.id === inspectUser.id) || inspectUser;
+  }, [inspectUser, usersList]);
+
   const filteredUsers = useMemo(() => {
     return usersList.filter((u) => {
-      // Search
       const search = searchTerm.toLowerCase().trim();
       const matchSearch =
         !search ||
@@ -158,12 +518,10 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
         u.grade.toLowerCase().includes(search) ||
         u.passwordText.toLowerCase().includes(search);
 
-      // Status filter
       let matchStatus = true;
       if (statusFilter === "online") matchStatus = u.isOnline;
       if (statusFilter === "offline") matchStatus = !u.isOnline;
 
-      // Grade filter
       let matchGrade = true;
       if (gradeFilter !== "all") matchGrade = u.grade === gradeFilter;
 
@@ -171,14 +529,74 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     });
   }, [usersList, searchTerm, statusFilter, gradeFilter]);
 
+  const filteredAuditLogs = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return auditLogs;
+    return auditLogs.filter(
+      (l) =>
+        l.action.toLowerCase().includes(q) ||
+        l.actor.toLowerCase().includes(q) ||
+        (l.target && l.target.toLowerCase().includes(q)) ||
+        l.details.toLowerCase().includes(q)
+    );
+  }, [auditLogs, logSearch]);
+
+  const filteredAuthLogs = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return authLogs;
+    return authLogs.filter(
+      (l) =>
+        l.action.toLowerCase().includes(q) ||
+        l.actor.toLowerCase().includes(q) ||
+        (l.target && l.target.toLowerCase().includes(q)) ||
+        l.details.toLowerCase().includes(q)
+    );
+  }, [authLogs, logSearch]);
+
+  const filteredActivityLogs = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return activityLogs;
+    return activityLogs.filter(
+      (l) =>
+        l.userEmail.toLowerCase().includes(q) ||
+        (l.userName && l.userName.toLowerCase().includes(q)) ||
+        l.feature.toLowerCase().includes(q) ||
+        l.action.toLowerCase().includes(q) ||
+        l.details.toLowerCase().includes(q)
+    );
+  }, [activityLogs, logSearch]);
+
+  const filteredEmailLogs = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return emailLogs;
+    return emailLogs.filter(
+      (l) =>
+        l.to.toLowerCase().includes(q) ||
+        l.subject.toLowerCase().includes(q) ||
+        l.actor.toLowerCase().includes(q) ||
+        (l.snippet && l.snippet.toLowerCase().includes(q))
+    );
+  }, [emailLogs, logSearch]);
+
+  const filteredApiErrorLogs = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return apiErrorLogs;
+    return apiErrorLogs.filter(
+      (e) =>
+        e.route.toLowerCase().includes(q) ||
+        e.message.toLowerCase().includes(q) ||
+        String(e.statusCode).includes(q)
+    );
+  }, [apiErrorLogs, logSearch]);
+
   // Aggregate stats
   const totalUsers = usersList.length;
   const onlineUsersCount = usersList.filter((u) => u.isOnline).length;
   const offlineUsersCount = usersList.filter((u) => !u.isOnline).length;
   const totalTasksSum = usersList.reduce((acc, u) => acc + (u.tasksCount || 0), 0);
   const completedTasksSum = usersList.reduce((acc, u) => acc + (u.completedTasksCount || 0), 0);
-  const totalDownloadsSum = usersList.reduce((acc, u) => acc + (u.downloadedPdfsCount || 0), 0);
   const totalQuizzesSum = usersList.reduce((acc, u) => acc + (u.quizzesCompleted || 0), 0);
+  const totalXpSum = usersList.reduce((acc, u) => acc + (u.gameXp || 0), 0);
 
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -189,16 +607,26 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
   const togglePasswordVisibility = (userId: string) => {
     setVisiblePasswords((prev) => ({
       ...prev,
-      [userId]: prev[userId] !== undefined ? !prev[userId] : false,
+      [userId]: prev[userId] !== undefined ? !prev[userId] : !showAllPasswords,
     }));
   };
 
-  const handleOpenInspect = (
+  const handleOpenInspect = async (
     user: AdminUserProgressDetails,
-    initialTab: "settings" | "tasks" | "files" | "calendar" | "notes" | "gaming" = "settings"
+    initialTab:
+      | "overview"
+      | "settings"
+      | "tasks"
+      | "files"
+      | "calendar"
+      | "learning"
+      | "activity"
+      | "gaming" = "overview"
   ) => {
     setInspectUser(user);
     setInspectTab(initialTab);
+    setShowRawJson(false);
+    setTaskInspectFilter("all");
     setInspectEditName(user.name);
     setInspectEditEmail(user.email);
     setInspectEditPassword(user.passwordText);
@@ -207,18 +635,90 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     setInspectEditTargetExam(user.targetExam || "");
     setInspectEditSubject(user.favoriteSubject || "Biology");
     setInspectEditGoalHours(user.dailyGoalHours || 3);
+    setInspectEditPhone(user.phone || "");
+    setInspectEditBio(user.bio || "");
     setInspectSettingsSuccess(null);
     setInspectSettingsError(null);
+    setDirectNotifTitle("");
+    setDirectNotifMessage("");
+
+    const initialDetails = getStudentFullDetails(user.id);
+    setEditStreakValue(Number(initialDetails.studyStreak || 0));
+    setEditXpValue(Number(initialDetails.gameProfile?.xp || 0));
+    setEditLevelValue(Number(initialDetails.gameProfile?.level || 1));
+    setEditRankTitle(initialDetails.gameProfile?.title || "Novice Scholar");
+
+    setIsRefreshingInspect(true);
+    const live = await fetchStudentLiveDetailsByAdmin(user.id);
+    setIsRefreshingInspect(false);
+    if (live.success && live.details) {
+      setInspectLastSyncedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      setEditStreakValue(Number(live.details.studyStreak || 0));
+      setEditXpValue(Number(live.details.gameProfile?.xp || 0));
+      setEditLevelValue(Number(live.details.gameProfile?.level || 1));
+      setEditRankTitle(live.details.gameProfile?.title || "Novice Scholar");
+    }
+  };
+
+  const handleRefreshInspectLive = async () => {
+    if (!liveInspectUser) return;
+    setIsRefreshingInspect(true);
+    const res = await fetchStudentLiveDetailsByAdmin(liveInspectUser.id);
+    setIsRefreshingInspect(false);
+    if (res.success && res.details) {
+      setInspectLastSyncedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      setEditStreakValue(Number(res.details.studyStreak || 0));
+      setEditXpValue(Number(res.details.gameProfile?.xp || 0));
+      setEditLevelValue(Number(res.details.gameProfile?.level || 1));
+      setEditRankTitle(res.details.gameProfile?.title || "Novice Scholar");
+      showToast(`Live server data synced for ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || "Could not refresh user dossier from server.", "error");
+    }
+  };
+
+  const handleExportUserDossierJson = () => {
+    if (!liveInspectUser) return;
+    const details = getStudentFullDetails(liveInspectUser.id);
+    const dossier = {
+      exportedAt: new Date().toISOString(),
+      account: {
+        id: liveInspectUser.id,
+        name: liveInspectUser.name,
+        email: liveInspectUser.email,
+        password: liveInspectUser.passwordText,
+        role: liveInspectUser.role || "student",
+        grade: liveInspectUser.grade,
+        schoolOrCollege: liveInspectUser.schoolOrCollege,
+        targetExam: liveInspectUser.targetExam,
+        favoriteSubject: liveInspectUser.favoriteSubject,
+        dailyGoalHours: liveInspectUser.dailyGoalHours,
+        phone: liveInspectUser.phone,
+        bio: liveInspectUser.bio,
+        joinedDate: liveInspectUser.joinedDate,
+        lastLogin: liveInspectUser.lastLogin,
+        isOnline: liveInspectUser.isOnline,
+      },
+      data: details,
+    };
+    const blob = new Blob([JSON.stringify(dossier, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `User_Dossier_${liveInspectUser.id}_${new Date().toISOString().split("T")[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported complete JSON dossier for ${liveInspectUser.name}`);
   };
 
   const handleSaveStudentSettingsSeparately = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inspectUser) return;
+    if (!liveInspectUser) return;
     setIsSavingInspectSettings(true);
     setInspectSettingsError(null);
     setInspectSettingsSuccess(null);
 
-    const res = await updateUserByAdmin(inspectUser.id, {
+    const res = await updateUserByAdmin(liveInspectUser.id, {
       name: inspectEditName,
       email: inspectEditEmail,
       password: inspectEditPassword,
@@ -227,14 +727,16 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       targetExam: inspectEditTargetExam,
       favoriteSubject: inspectEditSubject,
       dailyGoalHours: inspectEditGoalHours,
+      phone: inspectEditPhone,
+      bio: inspectEditBio,
     });
 
     setIsSavingInspectSettings(false);
     if (!res.success) {
       setInspectSettingsError(res.error || "Failed to update student settings.");
     } else {
-      setInspectSettingsSuccess(`Saved settings & credentials separately for ${inspectEditName}!`);
-      showSuccessNotice(`Updated settings for student: ${inspectEditName}`);
+      setInspectSettingsSuccess(`Saved all profile fields & credentials for ${inspectEditName}.`);
+      showToast(`Updated settings for ${inspectEditName}`);
       setInspectUser((prev) =>
         prev
           ? {
@@ -247,52 +749,182 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
               targetExam: inspectEditTargetExam,
               favoriteSubject: inspectEditSubject,
               dailyGoalHours: inspectEditGoalHours,
+              phone: inspectEditPhone,
+              bio: inspectEditBio,
             }
           : null
       );
     }
   };
 
-  const handleAddStudentTask = (e: React.FormEvent) => {
+  const handleSendDirectNotification = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inspectUser || !newTaskTitle.trim()) return;
+    if (!liveInspectUser || !directNotifTitle.trim() || !directNotifMessage.trim()) return;
+    setIsSendingDirectNotif(true);
+    const res = await sendDirectNotificationByAdmin(liveInspectUser.id, {
+      title: directNotifTitle.trim(),
+      message: directNotifMessage.trim(),
+      type: directNotifType,
+    });
+    setIsSendingDirectNotif(false);
+    if (res.success) {
+      setDirectNotifTitle("");
+      setDirectNotifMessage("");
+      showToast(`Delivered direct alert to ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || "Failed to send direct notification.", "error");
+    }
+  };
 
-    addStudentTaskByAdmin(inspectUser.id, {
+  const handleDeleteStudentFile = async (fileId: string) => {
+    if (!liveInspectUser) return;
+    const res = await deleteStudentFileByAdmin(liveInspectUser.id, fileId);
+    if (res.success) {
+      showToast("Removed file from student vault.");
+    } else {
+      showToast(res.error || "Failed to delete file.", "error");
+    }
+  };
+
+  const handleDeleteStudentPdf = async (pdfId: string, kind: "downloaded" | "custom") => {
+    if (!liveInspectUser) return;
+    const res = await deleteStudentPdfByAdmin(liveInspectUser.id, pdfId, kind);
+    if (res.success) {
+      showToast("Removed note record from student library.");
+    } else {
+      showToast(res.error || "Failed to remove note record.", "error");
+    }
+  };
+
+  const handleSaveStudyStats = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!liveInspectUser) return;
+    setIsSavingStudyStats(true);
+    const res = await updateStudentStudyStatsByAdmin(liveInspectUser.id, {
+      studyStreak: editStreakValue,
+      xp: editXpValue,
+      level: editLevelValue,
+      title: editRankTitle,
+    });
+    setIsSavingStudyStats(false);
+    if (res.success) {
+      showToast(`Saved XP, Rank & Streak for ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || "Failed to save study stats.", "error");
+    }
+  };
+
+  const handleClearDataSlice = async (clearKey: string, label: string) => {
+    if (!liveInspectUser) return;
+    const res = await updateStudentStudyStatsByAdmin(liveInspectUser.id, { clearKey });
+    if (res.success) {
+      showToast(`Cleared ${label} for ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || `Failed to clear ${label}.`, "error");
+    }
+  };
+
+  const handleAddStudentTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!liveInspectUser || !newTaskTitle.trim()) return;
+
+    const res = await addStudentTaskByAdmin(liveInspectUser.id, {
       title: newTaskTitle.trim(),
       priority: newTaskPriority,
-      category: newTaskCategory,
+      category: newTaskCategory.trim() || "General Study",
       dueDate: newTaskDueDate || new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0],
     });
 
-    setNewTaskTitle("");
-    showSuccessNotice(`Assigned new task for student: ${inspectUser.name}`);
+    if (res.success) {
+      setNewTaskTitle("");
+      showToast(`Assigned new task to ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || "Failed to assign task.", "error");
+    }
   };
 
-  const handleDeleteStudentTask = (taskId: string) => {
-    if (!inspectUser) return;
-    deleteStudentTaskByAdmin(inspectUser.id, taskId);
-    showSuccessNotice("Deleted task from student's record.");
+  const handleToggleStudentTask = async (taskId: string) => {
+    if (!liveInspectUser) return;
+    const res = await toggleStudentTaskByAdmin(liveInspectUser.id, taskId);
+    if (res.success) {
+      showToast("Updated task status.");
+    } else {
+      showToast(res.error || "Failed to update task.", "error");
+    }
+  };
+
+  const handleDeleteStudentTask = async (taskId: string) => {
+    if (!liveInspectUser) return;
+    const res = await deleteStudentTaskByAdmin(liveInspectUser.id, taskId);
+    if (res.success) {
+      showToast("Deleted task from student record.");
+    } else {
+      showToast(res.error || "Failed to delete task.", "error");
+    }
+  };
+
+  const handleAddCalendarEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!liveInspectUser || !newEventTitle.trim()) return;
+    const startIso = newEventDate
+      ? new Date(`${newEventDate}T09:00:00`).toISOString()
+      : new Date(Date.now() + 86400000).toISOString();
+    const endIso = new Date(new Date(startIso).getTime() + 3600000).toISOString();
+    const res = await addStudentCalendarEventByAdmin(liveInspectUser.id, {
+      title: newEventTitle.trim(),
+      startTime: startIso,
+      endTime: endIso,
+      category: newEventCategory,
+    });
+    if (res.success) {
+      setNewEventTitle("");
+      showToast(`Scheduled calendar event for ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || "Failed to schedule event.", "error");
+    }
+  };
+
+  const handleDeleteCalendarEvent = async (eventId: string) => {
+    if (!liveInspectUser) return;
+    const res = await deleteStudentCalendarEventByAdmin(liveInspectUser.id, eventId);
+    if (res.success) {
+      showToast("Removed calendar event from student schedule.");
+    } else {
+      showToast(res.error || "Failed to delete calendar event.", "error");
+    }
+  };
+
+  const handleGrantXp = async (amount: number) => {
+    if (!liveInspectUser) return;
+    const res = await grantStudentXpByAdmin(liveInspectUser.id, amount);
+    if (res.success) {
+      const updated = getStudentFullDetails(liveInspectUser.id);
+      setEditXpValue(Number(updated.gameProfile?.xp || 0));
+      setEditLevelValue(Number(updated.gameProfile?.level || 1));
+      showToast(`Adjusted XP by ${amount >= 0 ? `+${amount}` : amount} for ${liveInspectUser.name}`);
+    } else {
+      showToast(res.error || "Failed to adjust XP.", "error");
+    }
   };
 
   const handleLaunchStudentWorkspace = () => {
-    if (!inspectUser) return;
-    impersonateStudent(inspectUser.id);
+    if (!liveInspectUser) return;
+    impersonateStudent(liveInspectUser.id);
     if (setActiveTab) {
       setActiveTab("dashboard");
     }
-    showSuccessNotice(`Browsing workspace as: ${inspectUser.name}`);
+    showToast(`Browsing workspace as ${liveInspectUser.name}`);
   };
 
-  const handleResetStudentData = () => {
-    if (!inspectUser) return;
-    if (
-      window.confirm(
-        `Are you sure you want to reset all tasks, files, notes, and calendar for student "${inspectUser.name}"? Credentials (username & password) will be kept.`
-      )
-    ) {
-      resetStudentIsolatedDataByAdmin(inspectUser.id);
-      showSuccessNotice(`Reset all isolated data for ${inspectUser.name}`);
+  const handleConfirmResetStudentData = async () => {
+    if (!confirmResetUser) return;
+    const res = await resetStudentIsolatedDataByAdmin(confirmResetUser.id);
+    if (res.success) {
+      showToast(`Reset isolated study data for ${confirmResetUser.name}`);
+    } else {
+      showToast(res.error || "Failed to reset student data.", "error");
     }
+    setConfirmResetUser(null);
   };
 
   const openEditModal = (u: AdminUserProgressDetails) => {
@@ -326,7 +958,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       setEditError(res.error || "Failed to update user.");
     } else {
       setEditUser(null);
-      showSuccessNotice(`Updated account details for ${editName} successfully.`);
+      showToast(`Updated account details for ${editName}`);
     }
   };
 
@@ -342,19 +974,18 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       grade: newUserGrade,
       schoolOrCollege: newUserSchool,
       targetExam: newUserTargetExam,
-      favoriteSubject: newUserSubject,
     });
 
     setIsSubmittingCreate(false);
     if (!res.success) {
-      setCreateError(res.error || "Failed to create new user account.");
+      setCreateError(res.error || "Failed to create student account.");
     } else {
       setShowCreateModal(false);
       setNewUserName("");
       setNewUserEmail("");
       setNewUserPassword("");
       setNewUserSchool("");
-      showSuccessNotice(`Successfully created and registered student account.`);
+      showToast("Created and persisted student account on server.");
     }
   };
 
@@ -362,62 +993,339 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     if (!deleteConfirmUser) return;
     const res = await deleteUserByAdmin(deleteConfirmUser.id);
     if (!res.success) {
-      alert(res.error || "Failed to delete account.");
+      showToast(res.error || "Failed to delete account.", "error");
     } else {
-      showSuccessNotice(`Deleted user ${deleteConfirmUser.name} and cleared isolated storage.`);
+      showToast(`Deleted account ${deleteConfirmUser.name} and cleared isolated storage.`);
       setDeleteConfirmUser(null);
     }
   };
 
-  const handleExportJSON = () => {
-    const exportData = usersList.map((u) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      password: u.passwordText,
-      grade: u.grade,
-      schoolOrCollege: u.schoolOrCollege,
-      targetExam: u.targetExam,
-      joinedDate: u.joinedDate,
-      lastLogin: u.lastLogin,
-      isOnline: u.isOnline,
-      tasksTracked: u.tasksCount,
-      tasksCompleted: u.completedTasksCount,
-      notesDownloaded: u.downloadedPdfsCount,
-      quizzesCompleted: u.quizzesCompleted,
-      gameXp: u.gameXp,
-      gameLevel: u.gameLevel,
-    }));
+  const handleExportFullBackup = async () => {
+    try {
+      const res = await fetch("/api/admin/backup");
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Backup export failed");
+      }
+      const blob = new Blob([JSON.stringify(data.snapshot, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ProStudyMind_Server_Backup_${new Date().toISOString().split("T")[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("Downloaded complete backend database snapshot.");
+    } catch (err: any) {
+      showToast(err?.message || "Failed to download backup.", "error");
+    }
+  };
 
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
+  const handleRestoreBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setIsRestoringBackup(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const res = await fetch("/api/admin/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snapshot: parsed }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Invalid backup file");
+      }
+      await refreshAdminUsersList(true);
+      await refreshPlatformSettings();
+      await syncAnnouncementsNow();
+      fetchServerOverview();
+      fetchAnnouncements();
+      showToast(`Restored server backup (${data.usersCount} user accounts).`);
+    } catch (err: any) {
+      showToast(err?.message || "Failed to restore backup file.", "error");
+    } finally {
+      setIsRestoringBackup(false);
+    }
+  };
+
+  const handlePublishBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastTitle.trim() || !broadcastMessage.trim()) return;
+    setIsSendingBroadcast(true);
+    const res = await broadcastAnnouncementByAdmin(
+      broadcastTitle.trim(),
+      broadcastMessage.trim(),
+      broadcastType,
+      broadcastGrade
+    );
+    setIsSendingBroadcast(false);
+    if (!res.success) {
+      showToast(res.error || "Failed to send broadcast.", "error");
+    } else {
+      setBroadcastTitle("");
+      setBroadcastMessage("");
+      fetchAnnouncements();
+      syncAnnouncementsNow();
+      showToast("Broadcast published to backend and queued for student notifications.");
+    }
+  };
+
+  const handleDeleteAnnouncement = async (id: string) => {
+    try {
+      const res = await fetch(`/api/admin/announcements/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAnnouncements(data.announcements);
+        showToast("Removed announcement from server.");
+      }
+    } catch {
+      showToast("Failed to remove announcement.", "error");
+    }
+  };
+
+  const handleClearCache = async (target: "quiz" | "media" | "voice" | "chat" | "cooldowns" | "all") => {
+    setIsClearingCache(target);
+    try {
+      const res = await fetch("/api/admin/cache/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await fetchServerOverview();
+        showToast(`Cleared backend ${target === "all" ? "caches & model cooldowns" : `${target} cache`}.`);
+      }
+    } catch {
+      showToast("Failed to clear server cache.", "error");
+    } finally {
+      setIsClearingCache(null);
+    }
+  };
+
+  const handleSavePlatformSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settingsForm) return;
+    setIsSavingSettings(true);
+    try {
+      const res = await fetch("/api/admin/platform-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settingsForm),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSettingsForm(data.settings);
+        await refreshPlatformSettings();
+        await fetchServerOverview();
+        showToast("Saved backend platform settings.");
+      } else {
+        showToast(data.error || "Failed to save settings.", "error");
+      }
+    } catch {
+      showToast("Network error saving platform settings.", "error");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  const handleClearSelectedLogStream = async () => {
+    if (!confirmClearStream) return;
+    try {
+      const endpointMap = {
+        audit: "/api/admin/audit-logs",
+        activity: "/api/admin/logs/activity",
+        email: "/api/admin/email-logs",
+        errors: "/api/admin/logs/errors",
+      };
+      const res = await fetch(endpointMap[confirmClearStream], { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (confirmClearStream === "audit") setAuditLogs(data.logs || []);
+        if (confirmClearStream === "activity") setActivityLogs([]);
+        if (confirmClearStream === "email") setEmailLogs([]);
+        if (confirmClearStream === "errors") setApiErrorLogs([]);
+        fetchLogsSummary();
+        showToast(`Cleared ${confirmClearStream} logs.`);
+      }
+    } catch {
+      showToast("Failed to clear logs.", "error");
+    } finally {
+      setConfirmClearStream(null);
+    }
+  };
+
+  const handleExportLogs = (format: "csv" | "json") => {
+    const stream = logStream;
+    const url = `/api/admin/logs/export?stream=${encodeURIComponent(stream)}&format=${format}`;
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ProStudyMind_All_Users_${new Date().toISOString().split("T")[0]}.json`;
+    a.download = `ProStudyMind_${stream}_logs_${new Date().toISOString().split("T")[0]}.${format}`;
     a.click();
-    URL.revokeObjectURL(url);
-    showSuccessNotice("Exported all registered users database to JSON file.");
+    showToast(`Exported ${stream} logs (${format.toUpperCase()}).`);
+  };
+
+  const handleConnectGoogleGmail = async (forceConsent = false) => {
+    setIsConnectingGmail(true);
+    setGmailError(null);
+    try {
+      const res = await googleSignIn({ forceConsent });
+      setGmailConnected(true);
+      setGmailAuthEmail(res.email);
+      await Promise.all([
+        fetchGmailProfile(res.accessToken),
+        fetchGmailMessages(undefined, res.accessToken),
+        fetchEmailLogs(),
+      ]);
+      showToast(`Connected Gmail as ${res.email}`);
+    } catch (err: any) {
+      const msg =
+        err?.code === "auth/popup-closed-by-user"
+          ? "Google sign-in popup was closed before finishing."
+          : err?.message || "Failed to connect Google Gmail.";
+      setGmailError(msg);
+      showToast(msg, "error");
+    } finally {
+      setIsConnectingGmail(false);
+    }
+  };
+
+  const handleDisconnectGoogleGmail = async () => {
+    await googleLogout();
+    setGmailConnected(false);
+    setGmailAuthEmail(null);
+    setGmailProfile(null);
+    setGmailMessages([]);
+    setSelectedGmailMsg(null);
+    showToast("Disconnected Gmail OAuth session.");
+  };
+
+  const handleSelectGmailMessage = async (msgId: string) => {
+    const token = getGoogleAccessToken();
+    if (!token) {
+      setGmailConnected(false);
+      setGmailError("Please sign in with Google to read full email contents.");
+      return;
+    }
+    setIsLoadingGmailDetail(true);
+    try {
+      const res = await fetch(`/api/gmail/messages/${encodeURIComponent(msgId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (res.status === 401) {
+        setGmailConnected(false);
+        setGmailError("Gmail token expired. Reconnect with Google.");
+        return;
+      }
+      if (res.ok && data.success && data.message) {
+        setSelectedGmailMsg(data.message);
+      } else {
+        showToast(data.error || "Could not load message details.", "error");
+      }
+    } catch {
+      showToast("Network error reading email.", "error");
+    } finally {
+      setIsLoadingGmailDetail(false);
+    }
+  };
+
+  const handleRequestSendEmail = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailTo.trim() || !emailSubject.trim() || !emailBody.trim()) {
+      showToast("Recipient, subject, and message body are required.", "error");
+      return;
+    }
+    if (!getGoogleAccessToken()) {
+      setGmailConnected(false);
+      showToast("Please connect your Google Gmail account first before sending.", "error");
+      return;
+    }
+    setConfirmSendEmailOpen(true);
+  };
+
+  const handleConfirmAndSendEmail = async () => {
+    const token = getGoogleAccessToken();
+    if (!token) {
+      setConfirmSendEmailOpen(false);
+      setGmailConnected(false);
+      showToast("Google OAuth token is missing or expired. Please sign in again.", "error");
+      return;
+    }
+    setIsSendingEmail(true);
+    try {
+      const res = await fetch("/api/gmail/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          to: emailTo.trim(),
+          subject: emailSubject.trim(),
+          body: emailBody.trim(),
+          senderEmail: gmailProfile?.emailAddress || gmailAuthEmail || "admin0011",
+        }),
+      });
+      const data = await res.json();
+      setConfirmSendEmailOpen(false);
+      if (res.status === 401) {
+        setGmailConnected(false);
+        showToast("Gmail authorization expired. Reconnect Google and retry.", "error");
+        return;
+      }
+      if (!res.ok || !data.success) {
+        showToast(data.error || "Failed to send email via Gmail.", "error");
+        fetchEmailLogs();
+        return;
+      }
+      showToast(`Email sent to ${emailTo.trim()} via Gmail.`);
+      setEmailSubject("");
+      setEmailBody("");
+      fetchEmailLogs();
+      fetchGmailMessages(undefined, token);
+      fetchLogsSummary();
+    } catch {
+      setConfirmSendEmailOpen(false);
+      showToast("Network error sending email.", "error");
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const openQuickEmailForUser = (userEmail: string, userName: string) => {
+    setEmailTo(userEmail);
+    setEmailSubject(`ProStudyMind Academic Update — ${userName}`);
+    if (!emailBody.trim()) {
+      setEmailBody(`Assalam-o-Alaikum ${userName},\n\n`);
+    }
+    setInspectUser(null);
+    setSectionTab("gmail");
   };
 
   // Authorization Check
   if (!isAdmin) {
     return (
       <div className="min-h-[70vh] flex flex-col items-center justify-center p-6 text-center space-y-4">
-        <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-500 shadow-xl">
+        <div className="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-500">
           <ShieldAlert className="w-8 h-8" />
         </div>
         <div className="space-y-1">
-          <h2 className="text-xl font-black text-slate-900 dark:text-white">
-            Access Restricted: Master Admin Portal
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+            Access Restricted: Master Admin Dashboard
           </h2>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-            This mode is strictly confidential and reserved for the Master Administrator account (admin0011).
+            This backend administration console is reserved for the Master Administrator account.
           </p>
         </div>
         {setActiveTab && (
           <button
             onClick={() => setActiveTab("dashboard")}
-            className="px-5 py-2.5 rounded-2xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-500 shadow-md shadow-indigo-600/30 transition-all cursor-pointer"
+            className="px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-500 transition-colors cursor-pointer"
           >
             Return to Dashboard
           </button>
@@ -427,1181 +1335,3391 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
   }
 
   return (
-    <div className="space-y-6 animate-fadeIn pb-12">
-      {/* Success Notification Banner */}
-      {actionSuccessMsg && (
-        <div className="fixed top-20 right-6 z-50 p-4 rounded-2xl bg-emerald-600 text-white shadow-2xl flex items-center gap-3 animate-slideIn">
-          <CheckCircle2 className="w-5 h-5 shrink-0" />
-          <p className="text-xs font-black tracking-wide">{actionSuccessMsg}</p>
+    <div className="space-y-6 pb-12 max-w-6xl mx-auto">
+      {/* Toast Notification Banner */}
+      {actionToast && (
+        <div
+          className={`fixed top-20 right-6 z-50 px-4 py-3 rounded-xl text-white shadow-xl flex items-center gap-2.5 text-xs font-semibold border ${
+            actionToast.type === "error"
+              ? "bg-rose-600 border-rose-500"
+              : "bg-emerald-600 border-emerald-500"
+          }`}
+        >
+          {actionToast.type === "error" ? (
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+          )}
+          <span>{actionToast.message}</span>
         </div>
       )}
 
-      {/* Admin Control Banner */}
-      <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 border-2 border-amber-500/40 shadow-2xl text-white relative overflow-hidden">
-        {/* Decorative background glow */}
-        <div className="absolute top-0 right-0 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-0 left-1/3 w-80 h-80 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none" />
-
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30">
-                <ShieldCheck className="w-3.5 h-3.5" /> Master Administrator Hub
-              </span>
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 flex items-center gap-1.5">
-                <Radio className="w-3 h-3 text-emerald-400 animate-pulse" /> Live Real-Time Presence
-              </span>
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-slate-800/80 text-amber-300 border border-slate-700">
-                admin0011 verified
-              </span>
-            </div>
-
-            <h1 className="text-2xl sm:text-3xl font-black tracking-tight">
-              Platform User Control & Student Directory
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-300 max-w-2xl leading-relaxed">
-              Confidential administrative control over all registered student accounts. View passwords, isolated
-              academic milestones, and track real-time active and offline users.
-            </p>
+      {/* Top Admin Console Header */}
+      <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+            <ShieldCheck className="w-4 h-4 text-amber-500" />
+            <span>Master Administrator</span>
+            <span aria-hidden="true">/</span>
+            <span>Backend & Operations</span>
           </div>
-
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black shadow-lg shadow-indigo-600/30 active:scale-95 transition-all cursor-pointer"
-            >
-              <UserPlus className="w-4 h-4" />
-              <span>Add Student Account</span>
-            </button>
-            <button
-              onClick={handleExportJSON}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/15 transition-all cursor-pointer"
-              title="Download entire user database as JSON"
-            >
-              <Download className="w-4 h-4 text-amber-400" />
-              <span>Export Database</span>
-            </button>
-            <button
-              onClick={refreshAdminUsersList}
-              className="p-2.5 rounded-2xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-all cursor-pointer"
-              title="Refresh User Presence"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* High-Level Presence & Platform Metrics */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
-        {/* Total Users */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Users</span>
-            <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400">
-              <Users className="w-4 h-4" />
-            </div>
-          </div>
-          <div>
-            <p className="text-2xl font-black text-slate-900 dark:text-white">{totalUsers}</p>
-            <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold mt-0.5">100% Isolated State</p>
-          </div>
-        </div>
-
-        {/* Active Online */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-2 relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Active Online</span>
-            <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400">
-              <Radio className="w-4 h-4 animate-pulse" />
-            </div>
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping shrink-0" />
-              <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{onlineUsersCount}</p>
-            </div>
-            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold mt-0.5">🟢 Active Now</p>
-          </div>
-        </div>
-
-        {/* Offline Users */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Offline Users</span>
-            <div className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500">
-              <Clock className="w-4 h-4" />
-            </div>
-          </div>
-          <div>
-            <p className="text-2xl font-black text-slate-600 dark:text-slate-300">{offlineUsersCount}</p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">⚪ Offline Presence</p>
-          </div>
-        </div>
-
-        {/* Study Tasks Tracked */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Tasks Tracked</span>
-            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
-              <CheckCircle2 className="w-4 h-4" />
-            </div>
-          </div>
-          <div>
-            <p className="text-2xl font-black text-slate-900 dark:text-white">
-              {completedTasksSum}/{totalTasksSum}
-            </p>
-            <p className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mt-0.5">Completed Milestones</p>
-          </div>
-        </div>
-
-        {/* Quizzes Taken */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Quizzes Taken</span>
-            <div className="p-2 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400">
-              <Brain className="w-4 h-4" />
-            </div>
-          </div>
-          <div>
-            <p className="text-2xl font-black text-purple-600 dark:text-purple-400">{totalQuizzesSum}</p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">Assessment Sessions</p>
-          </div>
-        </div>
-
-        {/* Notes Downloaded */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Notes Saved</span>
-            <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
-              <FileDown className="w-4 h-4" />
-            </div>
-          </div>
-          <div>
-            <p className="text-2xl font-black text-amber-600 dark:text-amber-400">{totalDownloadsSum}</p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">Downloaded PDFs</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Control Filters & Search Tooling */}
-      <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          {/* Search Box */}
-          <div className="relative flex-1 max-w-lg">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by student name, email, password, school, grade, or board..."
-              className="w-full pl-10 pr-4 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-all"
-            />
-            {searchTerm && (
-              <button
-                onClick={() => setSearchTerm("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {/* Status Tabs & Grade Selector */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Status Pills */}
-            <div className="flex items-center p-1 rounded-2xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-bold">
-              <button
-                onClick={() => setStatusFilter("all")}
-                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                  statusFilter === "all"
-                    ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
-                    : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
-                }`}
-              >
-                All Users ({totalUsers})
-              </button>
-              <button
-                onClick={() => setStatusFilter("online")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                  statusFilter === "online"
-                    ? "bg-emerald-600 text-white shadow-xs"
-                    : "text-slate-500 hover:text-emerald-500"
-                }`}
-              >
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                Active ({onlineUsersCount})
-              </button>
-              <button
-                onClick={() => setStatusFilter("offline")}
-                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                  statusFilter === "offline"
-                    ? "bg-slate-300 dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
-                    : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
-                }`}
-              >
-                Offline ({offlineUsersCount})
-              </button>
-            </div>
-
-            {/* Grade Filter */}
-            <select
-              value={gradeFilter}
-              onChange={(e) => setGradeFilter(e.target.value)}
-              className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 focus:outline-none"
-            >
-              <option value="all">All Grades / Levels</option>
-              {GRADE_OPTIONS.map((g) => (
-                <option key={g} value={g}>
-                  {g}
-                </option>
-              ))}
-            </select>
-
-            {/* Toggle All Passwords Visibility */}
-            <button
-              onClick={() => setShowAllPasswords(!showAllPasswords)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
-                showAllPasswords
-                  ? "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300"
-                  : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400"
-              }`}
-              title="Show or mask plain text passwords across the user table"
-            >
-              {showAllPasswords ? (
-                <>
-                  <Eye className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Passwords Visible</span>
-                </>
-              ) : (
-                <>
-                  <EyeOff className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Mask Passwords</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Active Filters Summary */}
-        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800/80">
-          <p>
-            Showing <span className="font-extrabold text-slate-900 dark:text-white">{filteredUsers.length}</span> of{" "}
-            <span className="font-extrabold text-slate-900 dark:text-white">{totalUsers}</span> student accounts
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+            Backend & Admin Dashboard
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
+            Manage registered student accounts, publish server-wide broadcasts, inspect API & cache health, and monitor audit logs.
           </p>
-          <p className="text-[11px] font-mono">Real-time isolation active • Multi-Account Secure</p>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Add Student</span>
+          </button>
+          <button
+            onClick={handleExportFullBackup}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Download className="w-4 h-4 text-amber-500" />
+            <span>Backup Snapshot</span>
+          </button>
+          <button
+            onClick={async () => {
+              await refreshAdminUsersList();
+              await refreshPlatformSettings();
+              if (sectionTab === "gmail") {
+                await fetchEmailLogs();
+                const tok = getGoogleAccessToken();
+                if (tok) {
+                  await fetchGmailProfile(tok);
+                  await fetchGmailMessages(undefined, tok);
+                }
+              }
+              if (sectionTab === "backend") await fetchServerOverview();
+              if (sectionTab === "broadcasts") await fetchAnnouncements();
+              if (sectionTab === "logs") {
+                await fetchLogsSummary();
+                await fetchActiveLogStream();
+              }
+              showToast("Synchronized with Express backend.");
+            }}
+            className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors shrink-0 cursor-pointer"
+            title="Sync with server"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* Main Interactive Users Table */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/80 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                <th className="py-3.5 px-4">Student & Profile</th>
-                <th className="py-3.5 px-4">Login ID / Username</th>
-                <th className="py-3.5 px-4">Account Password</th>
-                <th className="py-3.5 px-4">Grade & Examination</th>
-                <th className="py-3.5 px-4">Presence Status</th>
-                <th className="py-3.5 px-4">Academic Progress</th>
-                <th className="py-3.5 px-4 text-right">Admin Controls</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-              {filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400 space-y-2">
-                    <Users className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
-                    <p className="text-sm font-bold">No user accounts matched your search or filters.</p>
-                  </td>
-                </tr>
-              ) : (
-                filteredUsers.map((user) => {
-                  const isThisAdmin = user.id === "admin0011" || user.email === "admin0011";
-                  const isPasswordShown =
-                    visiblePasswords[user.id] !== undefined
-                      ? visiblePasswords[user.id]
-                      : showAllPasswords;
+      {/* Console Sub-Navigation Segmented Bar */}
+      <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-slate-200/70 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-x-auto no-scrollbar">
+        <button
+          onClick={() => setSectionTab("users")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+            sectionTab === "users"
+              ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          }`}
+        >
+          <Users className="w-4 h-4 text-indigo-500" />
+          <span>Users & Accounts</span>
+          <span className="font-mono tabular-nums text-[11px] text-slate-400">({totalUsers})</span>
+        </button>
 
-                  return (
-                    <tr
-                      key={user.id}
-                      className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors group"
-                    >
-                      {/* 1. Student Name & School */}
-                      <td className="py-3.5 px-4">
-                        <div className="flex items-center gap-3">
-                          <div className="relative shrink-0">
-                            <div
-                              className={`w-9 h-9 rounded-2xl bg-gradient-to-br ${
-                                user.avatarColor || "from-indigo-500 to-purple-600"
-                              } text-white font-black text-xs flex items-center justify-center shadow-sm`}
-                            >
-                              {user.name
-                                .split(" ")
-                                .map((n) => n[0])
-                                .join("")
-                                .slice(0, 2)
-                                .toUpperCase()}
-                            </div>
-                            {/* Live Presence indicator dot */}
-                            <span
-                              className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
-                                user.isOnline ? "bg-emerald-500" : "bg-slate-400"
-                              }`}
-                              title={user.isOnline ? "Online right now" : "Offline"}
-                            />
-                          </div>
+        <button
+          onClick={() => setSectionTab("gmail")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+            sectionTab === "gmail"
+              ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          }`}
+        >
+          <Mail className="w-4 h-4 text-rose-500" />
+          <span>Gmail & Email</span>
+        </button>
 
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <p className="font-extrabold text-slate-900 dark:text-white truncate">
-                                {user.name}
-                              </p>
-                              {isThisAdmin && (
-                                <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-amber-500 text-slate-950">
-                                  MASTER ADMIN
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[170px]">
-                              {user.schoolOrCollege || "SPS College / High School"}
-                            </p>
-                          </div>
-                        </div>
-                      </td>
+        <button
+          onClick={() => setSectionTab("broadcasts")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+            sectionTab === "broadcasts"
+              ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          }`}
+        >
+          <Megaphone className="w-4 h-4 text-amber-500" />
+          <span>Broadcasts & Notices</span>
+        </button>
 
-                      {/* 2. Email / Login ID */}
-                      <td className="py-3.5 px-4 font-mono">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-slate-700 dark:text-slate-300 font-semibold truncate max-w-[170px]">
-                            {user.email}
-                          </span>
-                          <button
-                            onClick={() => handleCopy(user.email, `email-${user.id}`)}
-                            className="p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
-                            title="Copy Email / Login ID"
-                          >
-                            {copiedKey === `email-${user.id}` ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
-                        <p className="text-[10px] text-slate-400 font-sans">Joined: {user.joinedDate}</p>
-                      </td>
+        <button
+          onClick={() => setSectionTab("backend")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+            sectionTab === "backend"
+              ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          }`}
+        >
+          <Server className="w-4 h-4 text-emerald-500" />
+          <span>Backend & Server Control</span>
+        </button>
 
-                      {/* 3. Password (Plain text reveal & 1-click copy) */}
-                      <td className="py-3.5 px-4">
-                        <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 font-mono">
-                          <KeyRound className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                          <span className="font-bold text-slate-900 dark:text-amber-200">
-                            {isPasswordShown ? user.passwordText : "••••••••"}
-                          </span>
-                          <button
-                            onClick={() => togglePasswordVisibility(user.id)}
-                            className="p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                            title={isPasswordShown ? "Hide password" : "Show plain text password"}
-                          >
-                            {isPasswordShown ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                          </button>
-                          <button
-                            onClick={() => handleCopy(user.passwordText, `pass-${user.id}`)}
-                            className="p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                            title="Copy Password"
-                          >
-                            {copiedKey === `pass-${user.id}` ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
-                      </td>
+        <button
+          onClick={() => setSectionTab("logs")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+            sectionTab === "logs"
+              ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          }`}
+        >
+          <ScrollText className="w-4 h-4 text-sky-500" />
+          <span>Logs & Telemetry</span>
+        </button>
+      </div>
 
-                      {/* 4. Grade & Exam */}
-                      <td className="py-3.5 px-4">
-                        <span className="inline-block px-2.5 py-0.5 rounded-lg text-[10px] font-extrabold bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 mb-1">
-                          {user.grade}
-                        </span>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[160px]">
-                          {user.targetExam || "Annual Board Exam"}
-                        </p>
-                      </td>
+      {/* =================================================================== */}
+      {/* TAB 1: USERS & DIRECTORY                                            */}
+      {/* =================================================================== */}
+      {sectionTab === "users" && (
+        <div className="space-y-5">
+          {/* KPI Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Total Accounts</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+                {totalUsers}
+              </p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Online Now</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
+                {onlineUsersCount}
+              </p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Offline</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 mt-1">
+                {offlineUsersCount}
+              </p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Tasks Completed</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-indigo-600 dark:text-indigo-400 mt-1">
+                {completedTasksSum}/{totalTasksSum}
+              </p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Quizzes Logged</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-purple-600 dark:text-purple-400 mt-1">
+                {totalQuizzesSum}
+              </p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Platform XP</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-amber-600 dark:text-amber-400 mt-1">
+                {totalXpSum.toLocaleString()}
+              </p>
+            </div>
+          </div>
 
-                      {/* 5. Presence Status (Active vs Offline) */}
-                      <td className="py-3.5 px-4">
-                        {user.isOnline ? (
-                          <div className="flex items-center gap-2">
-                            <span className="flex h-2.5 w-2.5 relative">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
-                            </span>
-                            <div>
-                              <p className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 leading-tight">
-                                ACTIVE NOW
-                              </p>
-                              <p className="text-[10px] text-slate-400">Online in workspace</p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
-                            <span className="w-2.5 h-2.5 rounded-full bg-slate-400 shrink-0" />
-                            <div>
-                              <p className="text-[11px] font-bold leading-tight">OFFLINE</p>
-                              <p className="text-[10px] text-slate-400">{user.lastActiveFormatted}</p>
-                            </div>
-                          </div>
-                        )}
-                      </td>
+          {/* Search & Filters */}
+          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="relative flex-1 max-w-lg">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search by name, email, school, grade, or password..."
+                  className="w-full pl-10 pr-8 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500"
+                />
+                {searchTerm && (
+                  <button
+                    onClick={() => setSearchTerm("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
 
-                      {/* 6. Academic Progress */}
-                      <td className="py-3.5 px-4">
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between text-[10px] font-bold text-slate-600 dark:text-slate-300">
-                            <span>Tasks: {user.completedTasksCount}/{user.tasksCount}</span>
-                            <span>{user.gameXp} XP</span>
-                          </div>
-                          <div className="w-24 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                            <div
-                              className="h-full bg-indigo-600 rounded-full"
-                              style={{
-                                width: `${
-                                  user.tasksCount > 0
-                                    ? Math.round((user.completedTasksCount / user.tasksCount) * 100)
-                                    : 0
-                                }%`,
-                              }}
-                            />
-                          </div>
-                          <p className="text-[10px] text-slate-400">
-                            {user.downloadedPdfsCount} PDFs • {user.quizzesCompleted} Quizzes
-                          </p>
-                        </div>
-                      </td>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold">
+                  <button
+                    onClick={() => setStatusFilter("all")}
+                    className={`px-3 py-1.5 rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
+                      statusFilter === "all"
+                        ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+                        : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
+                    }`}
+                  >
+                    All ({totalUsers})
+                  </button>
+                  <button
+                    onClick={() => setStatusFilter("online")}
+                    className={`px-3 py-1.5 rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
+                      statusFilter === "online"
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "text-slate-500 hover:text-emerald-600"
+                    }`}
+                  >
+                    Online ({onlineUsersCount})
+                  </button>
+                  <button
+                    onClick={() => setStatusFilter("offline")}
+                    className={`px-3 py-1.5 rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
+                      statusFilter === "offline"
+                        ? "bg-slate-300 dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+                        : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
+                    }`}
+                  >
+                    Offline ({offlineUsersCount})
+                  </button>
+                </div>
 
-                      {/* 7. Actions */}
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => handleOpenInspect(user)}
-                            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors cursor-pointer"
-                            title="Inspect complete student record & settings"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => openEditModal(user)}
-                            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-300 transition-colors"
-                            title="Edit student account & credentials"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          {!isThisAdmin && (
-                            <button
-                              onClick={() => setDeleteConfirmUser(user)}
-                              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
-                              title="Delete student account"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
+                <select
+                  value={gradeFilter}
+                  onChange={(e) => setGradeFilter(e.target.value)}
+                  className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none"
+                >
+                  <option value="all">All Grades</option>
+                  {GRADE_OPTIONS.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={() => setShowAllPasswords(!showAllPasswords)}
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    showAllPasswords
+                      ? "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300"
+                      : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                  }`}
+                >
+                  {showAllPasswords ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                  <span>{showAllPasswords ? "Hide Passwords" : "Reveal Passwords"}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <span>
+                Showing <strong className="font-mono tabular-nums text-slate-900 dark:text-white">{filteredUsers.length}</strong> of{" "}
+                <strong className="font-mono tabular-nums text-slate-900 dark:text-white">{totalUsers}</strong> accounts
+              </span>
+              <span className="text-[11px]">Isolated per-student storage active</span>
+            </div>
+          </div>
+
+          {/* Users Data Table */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                    <th className="py-3 px-4">Student & Institution</th>
+                    <th className="py-3 px-4">Login Email / ID</th>
+                    <th className="py-3 px-4">Password</th>
+                    <th className="py-3 px-4">Grade & Exam</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 text-right">Progress</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredUsers.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-slate-400 space-y-2">
+                        <Users className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
+                        <p className="text-sm font-semibold">No student accounts matched your filters.</p>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                  ) : (
+                    filteredUsers.map((user) => {
+                      const isThisAdmin = user.id === "admin0011" || user.role === "admin";
+                      const isPasswordShown =
+                        visiblePasswords[user.id] !== undefined
+                          ? visiblePasswords[user.id]
+                          : showAllPasswords;
 
-      {/* ======================================================== */}
-      {/* MODAL 1: Complete Student Record Inspection              */}
-      {/* ======================================================== */}
-      {inspectUser && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-3xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Header with Student Identity & Quick Workspace Launch */}
-            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-4 bg-slate-50/50 dark:bg-slate-950/50 shrink-0">
-              <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${
-                    inspectUser.avatarColor || "from-indigo-500 to-purple-600"
-                  } text-white font-black text-sm flex items-center justify-center shadow-md shrink-0`}
+                      return (
+                        <tr
+                          key={user.id}
+                          className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
+                        >
+                          <td className="py-3 px-4">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenInspect(user, "overview")}
+                              className="flex items-center gap-3 text-left group cursor-pointer"
+                            >
+                              <div
+                                className={`w-8 h-8 rounded-xl bg-gradient-to-br ${
+                                  user.avatarColor || "from-indigo-500 to-purple-600"
+                                } text-white font-bold text-xs flex items-center justify-center shrink-0`}
+                              >
+                                {user.name
+                                  .split(" ")
+                                  .map((n) => n[0])
+                                  .join("")
+                                  .slice(0, 2)
+                                  .toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors truncate max-w-[180px]">
+                                  {user.name}
+                                  {isThisAdmin && (
+                                    <span className="ml-2 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                                      · Admin
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[190px]">
+                                  {user.schoolOrCollege || "SPS College / High School"}
+                                </p>
+                              </div>
+                            </button>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-1.5 font-mono">
+                              <span className="text-slate-700 dark:text-slate-300 truncate max-w-[180px]">
+                                {user.email}
+                              </span>
+                              <button
+                                onClick={() => handleCopy(user.email, `email-${user.id}`)}
+                                className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                                title="Copy email"
+                              >
+                                {copiedKey === `email-${user.id}` ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-slate-400 font-mono tabular-nums">
+                              Joined {user.joinedDate}
+                            </p>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 font-mono">
+                              <KeyRound className="w-3 h-3 text-amber-500 shrink-0" />
+                              <span className="font-semibold text-slate-900 dark:text-amber-200">
+                                {isPasswordShown ? user.passwordText : "••••••••"}
+                              </span>
+                              <button
+                                onClick={() => togglePasswordVisibility(user.id)}
+                                className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                                title={isPasswordShown ? "Mask password" : "Reveal password"}
+                              >
+                                {isPasswordShown ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                              </button>
+                              <button
+                                onClick={() => handleCopy(user.passwordText, `pass-${user.id}`)}
+                                className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                                title="Copy password"
+                              >
+                                {copiedKey === `pass-${user.id}` ? (
+                                  <Check className="w-3 h-3 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </button>
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            <p className="font-semibold text-slate-800 dark:text-slate-200">{user.grade}</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[170px]">
+                              {user.targetExam || "Annual Board Exam"}
+                            </p>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            {user.isOnline ? (
+                              <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                                Active now
+                              </span>
+                            ) : (
+                              <div>
+                                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Offline</p>
+                                <p className="text-[11px] font-mono tabular-nums text-slate-400">
+                                  {user.lastActiveFormatted}
+                                </p>
+                              </div>
+                            )}
+                          </td>
+
+                          <td className="py-3 px-4 text-right font-mono tabular-nums">
+                            <p className="font-semibold text-slate-900 dark:text-white">
+                              {user.gameXp.toLocaleString()} XP · Lvl {user.gameLevel} · {user.studyStreak}d
+                            </p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {user.completedTasksCount}/{user.tasksCount} tasks · {user.filesCount} files · {user.quizzesCompleted} quizzes
+                            </p>
+                          </td>
+
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => handleOpenInspect(user, "overview")}
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/70 hover:bg-indigo-600 text-indigo-700 dark:text-indigo-300 hover:text-white font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                                title="Inspect complete student data"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>Full Details</span>
+                              </button>
+                              {user.email.includes("@") && (
+                                <button
+                                  onClick={() => openQuickEmailForUser(user.email, user.name)}
+                                  className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                                  title="Send Gmail to student"
+                                >
+                                  <Mail className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <button
+                                onClick={() => openEditModal(user)}
+                                className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-300 transition-colors cursor-pointer"
+                                title="Edit credentials"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              {!isThisAdmin && (
+                                <button
+                                  onClick={() => setDeleteConfirmUser(user)}
+                                  className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                                  title="Delete account"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 1B: GMAIL & EMAIL WORKSPACE                                     */}
+      {/* =================================================================== */}
+      {sectionTab === "gmail" && (
+        <div className="space-y-5">
+          {/* Google Workspace OAuth Connection Banner */}
+          <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-rose-500" />
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                  Google Workspace Gmail Integration
+                </h2>
+                {gmailConnected ? (
+                  <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    · Connected
+                  </span>
+                ) : (
+                  <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                    · Authorization Required
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {gmailConnected
+                  ? `Authenticated as ${gmailProfile?.emailAddress || gmailAuthEmail || "Google Workspace User"}. Access token is held strictly in memory.`
+                  : "Connect your Google account with Gmail read & send permissions to browse inbox threads and dispatch student emails directly."}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {!gmailConnected ? (
+                <button
+                  type="button"
+                  onClick={() => handleConnectGoogleGmail(true)}
+                  disabled={isConnectingGmail}
+                  className="gsi-material-button flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs font-semibold border border-slate-300 shadow-xs whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
                 >
-                  {inspectUser.name
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")
-                    .slice(0, 2)
-                    .toUpperCase()}
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white truncate">
-                      {inspectUser.name}
-                    </h3>
-                    <span
-                      className={`inline-flex items-center gap-1 text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${
-                        inspectUser.isOnline
-                          ? "bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300"
-                          : "bg-slate-100 dark:bg-slate-800 text-slate-500"
-                      }`}
-                    >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          inspectUser.isOnline ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
-                        }`}
-                      />
-                      {inspectUser.isOnline ? "Active Online" : `Offline (${inspectUser.lastActiveFormatted})`}
-                    </span>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
-                      {inspectUser.grade}
-                    </span>
+                  <div className="w-4 h-4 shrink-0">
+                    <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: "block" }}>
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                    </svg>
                   </div>
-                  <p className="text-xs text-slate-500 font-mono mt-0.5 truncate">
-                    ID: {inspectUser.email} • {inspectUser.schoolOrCollege || "SPS College / High School"}
+                  <span>{isConnectingGmail ? "Connecting..." : "Sign in with Google"}</span>
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      fetchGmailProfile();
+                      fetchGmailMessages();
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingGmail ? "animate-spin" : ""}`} />
+                    <span>Sync Inbox</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleConnectGoogleGmail(true)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Link2 className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>Switch Account</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectGoogleGmail}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-xs font-semibold text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Unlink className="w-3.5 h-3.5" />
+                    <span>Disconnect</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {gmailError && (
+            <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{gmailError}</span>
+              </div>
+              {!gmailConnected && (
+                <button
+                  type="button"
+                  onClick={() => handleConnectGoogleGmail(true)}
+                  className="px-3 py-1 rounded-lg bg-rose-600 text-white font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  Reconnect Gmail
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Gmail Profile Metrics Strip */}
+          {gmailProfile && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono tabular-nums">
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Mailbox Address</p>
+                <p className="text-sm font-bold text-slate-900 dark:text-white mt-1 truncate">
+                  {gmailProfile.emailAddress || gmailAuthEmail}
+                </p>
+              </div>
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Total Messages</p>
+                <p className="text-xl font-bold text-indigo-600 dark:text-indigo-400 mt-0.5">
+                  {(gmailProfile.messagesTotal || 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Total Threads</p>
+                <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  {(gmailProfile.threadsTotal || 0).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Composer + Live Inbox Split */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* Compose Email Form */}
+            <form
+              onSubmit={handleRequestSendEmail}
+              className="lg:col-span-5 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3.5 text-xs self-start"
+            >
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">Compose & Send via Gmail</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Select a registered student or enter any recipient email. Confirmation is required before dispatch.
+                </p>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Quick Pick Student Recipient
+                </label>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const selected = usersList.find((u) => u.email === e.target.value);
+                    if (selected) {
+                      setEmailTo(selected.email);
+                      if (!emailSubject.trim()) {
+                        setEmailSubject(`ProStudyMind Academic Update — ${selected.name}`);
+                      }
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                >
+                  <option value="">Select student to auto-fill email...</option>
+                  {usersList
+                    .filter((u) => u.email.includes("@"))
+                    .map((u) => (
+                      <option key={u.id} value={u.email}>
+                        {u.name} ({u.email}) — {u.grade}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Recipient Email (To) *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={emailTo}
+                  onChange={(e) => setEmailTo(e.target.value)}
+                  placeholder="student@gmail.com"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Subject *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={emailSubject}
+                  onChange={(e) => setEmailSubject(e.target.value)}
+                  placeholder="e.g. Weekly Study Plan & Exam Schedule"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Email Body *
+                </label>
+                <textarea
+                  rows={6}
+                  required
+                  value={emailBody}
+                  onChange={(e) => setEmailBody(e.target.value)}
+                  placeholder="Write your official message..."
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 resize-y"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSendingEmail}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+                <span>{isSendingEmail ? "Dispatching..." : "Review & Send Email"}</span>
+              </button>
+            </form>
+
+            {/* Gmail Inbox List & Message Reader */}
+            <div className="lg:col-span-7 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Inbox className="w-4 h-4 text-indigo-500" />
+                    <span>Gmail Inbox Explorer</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Search recent messages via Gmail API
+                  </p>
+                </div>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    fetchGmailMessages();
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={gmailQuery}
+                    onChange={(e) => setGmailQuery(e.target.value)}
+                    placeholder="Search Gmail (e.g. from:student)..."
+                    className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 w-48"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!gmailConnected || isLoadingGmail}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
+                  >
+                    Search
+                  </button>
+                </form>
+              </div>
+
+              {!gmailConnected ? (
+                <div className="p-10 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 space-y-2 text-xs">
+                  <Mail className="w-8 h-8 mx-auto opacity-40" />
+                  <p className="font-semibold text-slate-600 dark:text-slate-300">
+                    Connect Google to browse your live Gmail messages
+                  </p>
+                  <p className="text-[11px]">
+                    Email delivery logs remain accessible below even when Gmail is disconnected.
+                  </p>
+                </div>
+              ) : isLoadingGmail ? (
+                <div className="space-y-2">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="h-16 rounded-xl bg-slate-100 dark:bg-slate-800/50 animate-pulse" />
+                  ))}
+                </div>
+              ) : gmailMessages.length === 0 ? (
+                <div className="p-8 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
+                  No Gmail messages matched this query.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                  <div className="md:col-span-6 space-y-2 max-h-96 overflow-y-auto pr-1">
+                    {gmailMessages.map((msg) => (
+                      <button
+                        key={msg.id}
+                        type="button"
+                        onClick={() => handleSelectGmailMessage(msg.id)}
+                        className={`w-full text-left p-3 rounded-xl border transition-colors cursor-pointer ${
+                          selectedGmailMsg?.id === msg.id
+                            ? "bg-indigo-50 dark:bg-indigo-950/60 border-indigo-400 dark:border-indigo-700"
+                            : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate">
+                            {msg.from}
+                          </span>
+                          {msg.isUnread && (
+                            <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 shrink-0">
+                              Unread
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-bold text-slate-900 dark:text-white truncate mt-0.5">
+                          {msg.subject}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+                          {msg.snippet}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="md:col-span-6 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs flex flex-col max-h-96">
+                    {isLoadingGmailDetail ? (
+                      <p className="text-slate-400 py-8 text-center">Loading message body...</p>
+                    ) : !selectedGmailMsg ? (
+                      <div className="py-12 text-center text-slate-400 space-y-1 m-auto">
+                        <Inbox className="w-6 h-6 mx-auto opacity-40" />
+                        <p>Select an email thread on the left to read its full body.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5 overflow-y-auto flex-1">
+                        <div className="pb-2 border-b border-slate-200 dark:border-slate-800 space-y-1">
+                          <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                            {selectedGmailMsg.subject}
+                          </h4>
+                          <p className="text-[11px] text-slate-500 font-mono break-all">
+                            From: {selectedGmailMsg.from}
+                          </p>
+                          <p className="text-[11px] text-slate-400 font-mono">
+                            {selectedGmailMsg.date}
+                          </p>
+                        </div>
+                        <pre className="whitespace-pre-wrap font-sans text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                          {selectedGmailMsg.bodyText}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Persistent Email Delivery & Sync History Table */}
+          <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Email Delivery & Dispatch History ({emailLogs.length})
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Persisted server-side audit of every outbound email sent or attempted through Gmail API
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => fetchEmailLogs()}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {isLoadingEmailLogs ? (
+              <p className="text-xs text-slate-400 py-4">Loading email logs...</p>
+            ) : emailLogs.length === 0 ? (
+              <p className="text-xs text-slate-400 py-6 text-center">
+                No email dispatches recorded yet.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-500">
+                      <th className="py-2 pr-3">Timestamp</th>
+                      <th className="py-2 px-3">Recipient</th>
+                      <th className="py-2 px-3">Subject</th>
+                      <th className="py-2 px-3">Actor</th>
+                      <th className="py-2 pl-3 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {emailLogs.slice(0, 25).map((log) => (
+                      <tr key={log.id}>
+                        <td className="py-2 pr-3 font-mono tabular-nums text-[11px] text-slate-500 whitespace-nowrap">
+                          {new Date(log.timestamp).toLocaleString()}
+                        </td>
+                        <td className="py-2 px-3 font-mono text-slate-800 dark:text-slate-200">{log.to}</td>
+                        <td className="py-2 px-3 text-slate-900 dark:text-white font-semibold">
+                          {log.subject}
+                          {log.error && (
+                            <p className="text-[11px] text-rose-500 font-normal">{log.error}</p>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 font-mono text-slate-500">{log.actor}</td>
+                        <td
+                          className={`py-2 pl-3 text-right font-semibold uppercase text-[11px] ${
+                            log.status === "sent"
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : log.status === "failed"
+                              ? "text-rose-600 dark:text-rose-400"
+                              : "text-indigo-600 dark:text-indigo-400"
+                          }`}
+                        >
+                          {log.status}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 2: BROADCASTS & ANNOUNCEMENTS                                   */}
+      {/* =================================================================== */}
+      {sectionTab === "broadcasts" && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Compose Broadcast */}
+          <form
+            onSubmit={handlePublishBroadcast}
+            className="lg:col-span-5 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 self-start"
+          >
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-white">Publish Server Announcement</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Persists to backend storage and delivers to matching student notification centers across sessions.
+              </p>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Announcement Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={broadcastTitle}
+                  onChange={(e) => setBroadcastTitle(e.target.value)}
+                  placeholder="e.g. BISE 2026 Physics Model Papers Uploaded"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Priority Type
+                  </label>
+                  <select
+                    value={broadcastType}
+                    onChange={(e) => setBroadcastType(e.target.value as ServerAnnouncement["type"])}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                  >
+                    <option value="urgent">Urgent Notice</option>
+                    <option value="info">Academic Info</option>
+                    <option value="reminder">Exam Reminder</option>
+                    <option value="security">Security Advisory</option>
+                    <option value="sync">Platform Update</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Target Audience
+                  </label>
+                  <select
+                    value={broadcastGrade}
+                    onChange={(e) => setBroadcastGrade(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                  >
+                    <option value="All Levels">All Students</option>
+                    {GRADE_OPTIONS.filter((g) => g !== "All Levels (Master Admin)" && g !== "All Levels").map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Message Content *
+                </label>
+                <textarea
+                  rows={4}
+                  required
+                  value={broadcastMessage}
+                  onChange={(e) => setBroadcastMessage(e.target.value)}
+                  placeholder="Write the full announcement details for students..."
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 resize-none"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSendingBroadcast}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+                <span>{isSendingBroadcast ? "Publishing..." : "Publish Broadcast"}</span>
+              </button>
+            </div>
+          </form>
+
+          {/* Active Announcements List */}
+          <div className="lg:col-span-7 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">Published Announcements</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Stored in backend database ({announcements.length} active)
+                </p>
+              </div>
+              <button
+                onClick={fetchAnnouncements}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {isLoadingAnnouncements ? (
+              <div className="space-y-3">
+                {[1, 2].map((i) => (
+                  <div key={i} className="h-20 rounded-xl bg-slate-100 dark:bg-slate-800/50 animate-pulse" />
+                ))}
+              </div>
+            ) : announcements.length === 0 ? (
+              <div className="p-10 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 space-y-1.5">
+                <Megaphone className="w-7 h-7 mx-auto opacity-40" />
+                <p className="text-xs font-semibold">No broadcasts published yet.</p>
+                <p className="text-[11px]">Use the form on the left to notify students.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {announcements.map((ann) => (
+                  <div
+                    key={ann.id}
+                    className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 flex-wrap">
+                        <span
+                          className={`font-bold uppercase ${
+                            ann.type === "urgent"
+                              ? "text-rose-600 dark:text-rose-400"
+                              : ann.type === "security"
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-indigo-600 dark:text-indigo-400"
+                          }`}
+                        >
+                          {ann.type}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span>Audience: {ann.targetGrade}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-mono tabular-nums">
+                          {new Date(ann.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-900 dark:text-white">{ann.title}</h3>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{ann.message}</p>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteAnnouncement(ann.id)}
+                      className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors shrink-0 cursor-pointer"
+                      title="Delete announcement"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 3: BACKEND & SERVER CONTROL                                     */}
+      {/* =================================================================== */}
+      {sectionTab === "backend" && (
+        <div className="space-y-5">
+          {isLoadingOverview && !overview ? (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="h-24 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 animate-pulse" />
+              ))}
+            </div>
+          ) : overview ? (
+            <>
+              {/* Live Server KPIs */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <span>Express Runtime</span>
+                    <Activity className="w-4 h-4 text-emerald-500" />
+                  </div>
+                  <p className="text-xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
+                    Healthy · {formatUptime(overview.server.uptimeSeconds)}
+                  </p>
+                  <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                    {overview.server.nodeVersion} · PID {overview.server.pid}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <span>Process Memory</span>
+                    <HardDrive className="w-4 h-4 text-indigo-500" />
+                  </div>
+                  <p className="text-xl font-bold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+                    {overview.server.memory.rssMb} MB RSS
+                  </p>
+                  <p className="text-[11px] text-slate-400 font-mono tabular-nums mt-0.5">
+                    Heap: {overview.server.memory.heapUsedMb} / {overview.server.memory.heapTotalMb} MB
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <span>API Traffic</span>
+                    <Zap className="w-4 h-4 text-amber-500" />
+                  </div>
+                  <p className="text-xl font-bold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+                    {overview.traffic.totalApiRequests.toLocaleString()} calls
+                  </p>
+                  <p className="text-[11px] text-slate-400 font-mono tabular-nums mt-0.5">
+                    Avg latency: {overview.traffic.avgLatencyMs} ms
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <span>Gemini AI Engine</span>
+                    <Brain className="w-4 h-4 text-purple-500" />
+                  </div>
+                  <p
+                    className={`text-xl font-bold mt-1 ${
+                      overview.ai.geminiConfigured
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-amber-600 dark:text-amber-400"
+                    }`}
+                  >
+                    {overview.ai.geminiConfigured ? "Configured" : "Fallback Mode"}
+                  </p>
+                  <p className="text-[11px] text-slate-400 font-mono tabular-nums mt-0.5">
+                    {Object.keys(overview.ai.activeCooldowns).length} model cooldown(s)
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={handleLaunchStudentWorkspace}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-black text-xs shadow-md shadow-indigo-600/30 transition-all cursor-pointer"
-                  title="Launch workspace directly as this student"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Launch Student View</span>
-                </button>
-                <button
-                  onClick={() => setInspectUser(null)}
-                  className="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Sub-tab Navigation Bar */}
-            <div className="px-5 pt-3 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
-              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar text-xs font-bold pb-2">
-                <button
-                  onClick={() => setInspectTab("settings")}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-                    inspectTab === "settings"
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <Sliders className="w-3.5 h-3.5" />
-                  <span>Account Settings & Passwords</span>
-                </button>
-
-                <button
-                  onClick={() => setInspectTab("tasks")}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-                    inspectTab === "tasks"
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <CheckSquare className="w-3.5 h-3.5" />
-                  <span>Tasks & Todos ({getStudentFullDetails(inspectUser.id).tasks.length})</span>
-                </button>
-
-                <button
-                  onClick={() => setInspectTab("files")}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-                    inspectTab === "files"
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <Folder className="w-3.5 h-3.5" />
-                  <span>Files & Audio Notes ({getStudentFullDetails(inspectUser.id).files.length})</span>
-                </button>
-
-                <button
-                  onClick={() => setInspectTab("calendar")}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-                    inspectTab === "calendar"
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>Study Calendar ({getStudentFullDetails(inspectUser.id).calendar.length})</span>
-                </button>
-
-                <button
-                  onClick={() => setInspectTab("notes")}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-                    inspectTab === "notes"
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <FileDown className="w-3.5 h-3.5" />
-                  <span>Saved Notes ({getStudentFullDetails(inspectUser.id).downloadedPdfs.length})</span>
-                </button>
-
-                <button
-                  onClick={() => setInspectTab("gaming")}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-                    inspectTab === "gaming"
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <Award className="w-3.5 h-3.5" />
-                  <span>Gaming & XP ({inspectUser.gameXp} XP)</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Body with Active Subtab Content */}
-            <div className="p-5 sm:p-6 overflow-y-auto flex-1 space-y-5">
-              {/* TAB 1: Separate Account Settings & Credentials */}
-              {inspectTab === "settings" && (
-                <div className="space-y-5 animate-fadeIn">
-                  {inspectSettingsSuccess && (
-                    <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                      <span>{inspectSettingsSuccess}</span>
-                    </div>
-                  )}
-
-                  {inspectSettingsError && (
-                    <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
-                      <span>{inspectSettingsError}</span>
-                    </div>
-                  )}
-
-                  <form onSubmit={handleSaveStudentSettingsSeparately} className="space-y-4 text-xs">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Full Student Name
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={inspectEditName}
-                          onChange={(e) => setInspectEditName(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Student Email or Login ID
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={inspectEditEmail}
-                          onChange={(e) => setInspectEditEmail(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 font-mono"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Password Control */}
+              {/* FastCache + Storage Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                {/* In-Memory FastCache Panel */}
+                <div className="lg:col-span-7 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="font-bold text-slate-700 dark:text-slate-300">
-                          Account Password (Plain-Text Editable)
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setShowInspectPassword(!showInspectPassword)}
-                            className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
-                          >
-                            {showInspectPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            <span>{showInspectPassword ? "Mask Password" : "Show Password"}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleCopy(inspectEditPassword, "inspect-pass-copy")}
-                            className="text-[11px] text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
-                          >
-                            {copiedKey === "inspect-pass-copy" ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                            <span>Copy</span>
-                          </button>
-                        </div>
-                      </div>
-                      <div className="relative">
-                        <input
-                          type={showInspectPassword ? "text" : "password"}
-                          required
-                          value={inspectEditPassword}
-                          onChange={(e) => setInspectEditPassword(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-amber-300 font-mono font-bold focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Class / Academic Grade
-                        </label>
-                        <select
-                          value={inspectEditGrade}
-                          onChange={(e) => setInspectEditGrade(e.target.value as StudentGrade)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                        >
-                          {GRADE_OPTIONS.map((g) => (
-                            <option key={g} value={g}>
-                              {g}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          School or College Name
-                        </label>
-                        <input
-                          type="text"
-                          value={inspectEditSchool}
-                          onChange={(e) => setInspectEditSchool(e.target.value)}
-                          placeholder="e.g. SPS College Batkhela"
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                      <div className="sm:col-span-2">
-                        <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Target Board Examination
-                        </label>
-                        <input
-                          type="text"
-                          value={inspectEditTargetExam}
-                          onChange={(e) => setInspectEditTargetExam(e.target.value)}
-                          placeholder="e.g. BISE Board Examinations 2026"
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Daily Study Target (Hours)
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={16}
-                          value={inspectEditGoalHours}
-                          onChange={(e) => setInspectEditGoalHours(Number(e.target.value))}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800">
-                      <button
-                        type="button"
-                        onClick={handleResetStudentData}
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 font-bold transition-all cursor-pointer"
-                        title="Erase all isolated tasks, files, notes, and calendar data for this student"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Reset Study Data</span>
-                      </button>
-
-                      <button
-                        type="submit"
-                        disabled={isSavingInspectSettings}
-                        className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-md shadow-amber-500/30 transition-all cursor-pointer flex items-center gap-2"
-                      >
-                        {isSavingInspectSettings ? (
-                          <>
-                            <Sparkles className="w-3.5 h-3.5 animate-spin" />
-                            <span>Saving Settings...</span>
-                          </>
-                        ) : (
-                          <>
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>Save Student Settings Separately</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              )}
-
-              {/* TAB 2: Tasks & Todos */}
-              {inspectTab === "tasks" && (
-                <div className="space-y-5 animate-fadeIn">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                        Student Assigned Tasks & Milestones
-                      </h4>
-                      <p className="text-xs text-slate-500">
-                        Independently managed study tasks for {inspectUser.name}
+                      <h2 className="text-base font-bold text-slate-900 dark:text-white">In-Memory FastCache</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        LRU caches powering sub-millisecond quiz, media, voice, and chat responses
                       </p>
                     </div>
-                    <span className="px-2.5 py-1 rounded-xl bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 font-extrabold text-xs">
-                      {getStudentFullDetails(inspectUser.id).tasks.filter((t) => t.status === "completed" || t.completed).length} / {getStudentFullDetails(inspectUser.id).tasks.length} Completed
-                    </span>
-                  </div>
-
-                  {/* Tasks List */}
-                  <div className="space-y-2.5">
-                    {getStudentFullDetails(inspectUser.id).tasks.length === 0 ? (
-                      <div className="p-8 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
-                        No tasks currently tracked for this student. Assign one below!
-                      </div>
-                    ) : (
-                      getStudentFullDetails(inspectUser.id).tasks.map((task) => (
-                        <div
-                          key={task.id}
-                          className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3 text-xs"
-                        >
-                          <div className="space-y-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span
-                                className={`w-2 h-2 rounded-full ${
-                                  task.status === "completed" || task.completed ? "bg-emerald-500" : "bg-amber-500"
-                                }`}
-                              />
-                              <p
-                                className={`font-bold ${
-                                  task.status === "completed" || task.completed
-                                    ? "line-through text-slate-400"
-                                    : "text-slate-900 dark:text-white"
-                                }`}
-                              >
-                                {task.title}
-                              </p>
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
-                                {task.priority || "Normal"}
-                              </span>
-                            </div>
-                            {task.description && (
-                              <p className="text-[11px] text-slate-500 leading-snug">{task.description}</p>
-                            )}
-                            <div className="flex items-center gap-3 text-[10px] text-slate-400 pt-0.5">
-                              <span>Due: {task.dueDate || "Ongoing"}</span>
-                              <span>•</span>
-                              <span>Category: {task.category || "General"}</span>
-                            </div>
-                          </div>
-
-                          <button
-                            onClick={() => handleDeleteStudentTask(task.id)}
-                            className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/60 rounded-lg transition-colors cursor-pointer shrink-0"
-                            title="Delete this task"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-
-                  {/* Assign New Task Card */}
-                  <form
-                    onSubmit={handleAddStudentTask}
-                    className="p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 space-y-3 text-xs"
-                  >
-                    <p className="font-extrabold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
-                      <Plus className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                      Assign New Task for {inspectUser.name}
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      <input
-                        type="text"
-                        required
-                        placeholder="Task title (e.g. Physics Ch 4 derivations)"
-                        value={newTaskTitle}
-                        onChange={(e) => setNewTaskTitle(e.target.value)}
-                        className="sm:col-span-2 px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                      />
-                      <select
-                        value={newTaskPriority}
-                        onChange={(e) => setNewTaskPriority(e.target.value as any)}
-                        className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleClearCache("cooldowns")}
+                        disabled={isClearingCache !== null}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer"
                       >
-                        <option value="urgent">Urgent Priority</option>
-                        <option value="high">High Priority</option>
-                        <option value="medium">Medium Priority</option>
-                        <option value="low">Low Priority</option>
-                      </select>
+                        Reset Cooldowns
+                      </button>
+                      <button
+                        onClick={() => handleClearCache("all")}
+                        disabled={isClearingCache !== null}
+                        className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white cursor-pointer"
+                      >
+                        {isClearingCache === "all" ? "Flushing..." : "Flush All Caches"}
+                      </button>
                     </div>
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400">
+                          <th className="py-2 pr-3">Cache Pool</th>
+                          <th className="py-2 px-3 text-right">Entries</th>
+                          <th className="py-2 px-3 text-right">TTL</th>
+                          <th className="py-2 px-3 text-right">Hits / Misses</th>
+                          <th className="py-2 px-3 text-right">Hit Rate</th>
+                          <th className="py-2 pl-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono tabular-nums">
+                        {(["quiz", "media", "voice", "chat"] as const).map((key) => {
+                          const c = overview.ai.caches[key];
+                          return (
+                            <tr key={key}>
+                              <td className="py-2.5 pr-3 font-sans font-semibold capitalize text-slate-900 dark:text-white">
+                                {key} Cache
+                              </td>
+                              <td className="py-2.5 px-3 text-right text-slate-700 dark:text-slate-300">
+                                {c.size} / {c.maxItems}
+                              </td>
+                              <td className="py-2.5 px-3 text-right text-slate-500">{c.ttlMinutes}m</td>
+                              <td className="py-2.5 px-3 text-right text-slate-600 dark:text-slate-300">
+                                {c.hits} / {c.misses}
+                              </td>
+                              <td className="py-2.5 px-3 text-right text-emerald-600 dark:text-emerald-400 font-bold">
+                                {c.hitRatePercent}%
+                              </td>
+                              <td className="py-2.5 pl-3 text-right font-sans">
+                                <button
+                                  onClick={() => handleClearCache(key)}
+                                  disabled={isClearingCache !== null}
+                                  className="px-2.5 py-1 rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-300 cursor-pointer"
+                                >
+                                  Flush
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* JSON Persistence Storage & Backup Restore */}
+                <div className="lg:col-span-5 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base font-bold text-slate-900 dark:text-white">JSON Data Store</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Server-side files in data directory
+                      </p>
+                    </div>
+                    <Database className="w-4 h-4 text-indigo-500" />
+                  </div>
+
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs font-mono tabular-nums">
+                    {overview.database.storageFiles.map((f) => (
+                      <div key={f.name} className="py-2 flex items-center justify-between">
+                        <span className="text-slate-700 dark:text-slate-300">{f.name}</span>
+                        <span className="text-slate-500 dark:text-slate-400">{formatBytes(f.bytes)}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleExportFullBackup}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Download Snapshot</span>
+                    </button>
+                    <label className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white cursor-pointer">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{isRestoringBackup ? "Restoring..." : "Restore JSON"}</span>
                       <input
-                        type="date"
-                        value={newTaskDueDate}
-                        onChange={(e) => setNewTaskDueDate(e.target.value)}
-                        className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs"
+                        type="file"
+                        accept="application/json,.json"
+                        onChange={handleRestoreBackupFile}
+                        disabled={isRestoringBackup}
+                        className="hidden"
                       />
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Platform Governance Settings + API Endpoint Traffic */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                {/* Platform Governance Settings */}
+                {settingsForm && (
+                  <form
+                    onSubmit={handleSavePlatformSettings}
+                    className="lg:col-span-5 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 text-xs"
+                  >
+                    <div>
+                      <h2 className="text-base font-bold text-slate-900 dark:text-white">Platform Settings</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Live configuration persisted on server
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Global Notice / Maintenance Banner
+                        </label>
+                        <input
+                          type="text"
+                          value={settingsForm.maintenanceBanner}
+                          onChange={(e) =>
+                            setSettingsForm({ ...settingsForm, maintenanceBanner: e.target.value })
+                          }
+                          placeholder="Leave empty to hide top banner"
+                          className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Support Contact Email
+                          </label>
+                          <input
+                            type="email"
+                            value={settingsForm.supportEmail}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, supportEmail: e.target.value })
+                            }
+                            className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Default Goal (Hours)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={16}
+                            value={settingsForm.defaultDailyGoalHours}
+                            onChange={(e) =>
+                              setSettingsForm({
+                                ...settingsForm,
+                                defaultDailyGoalHours: Number(e.target.value),
+                              })
+                            }
+                            className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono tabular-nums focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 pt-1">
+                        <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 cursor-pointer">
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">
+                            Allow Public Student Signup
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={settingsForm.allowPublicSignup}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, allowPublicSignup: e.target.checked })
+                            }
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                        </label>
+
+                        <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 cursor-pointer">
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">
+                            Enable AI Tutor Endpoints
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={settingsForm.aiTutorEnabled}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, aiTutorEnabled: e.target.checked })
+                            }
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                        </label>
+
+                        <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 cursor-pointer">
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">
+                            Enable Adsterra Ad Placements
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={settingsForm.adPlacementsEnabled}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, adPlacementsEnabled: e.target.checked })
+                            }
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                        </label>
+                      </div>
+
                       <button
                         type="submit"
-                        className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-all shadow-sm cursor-pointer"
+                        disabled={isSavingSettings}
+                        className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-colors cursor-pointer"
                       >
-                        Add Task to Student
+                        {isSavingSettings ? "Saving Settings..." : "Save Platform Configuration"}
                       </button>
                     </div>
                   </form>
-                </div>
-              )}
+                )}
 
-              {/* TAB 3: Files & Voice Memos */}
-              {inspectTab === "files" && (
-                <div className="space-y-4 animate-fadeIn">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      Uploaded Files & Voice Recordings
-                    </h4>
-                    <p className="text-xs text-slate-500">
-                      Isolated audio memos and study notes belonging to {inspectUser.name}
-                    </p>
+                {/* Top API Routes Table */}
+                <div className="lg:col-span-7 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base font-bold text-slate-900 dark:text-white">API Route Telemetry</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Live request counts and average latency per Express endpoint
+                      </p>
+                    </div>
+                    <button
+                      onClick={fetchServerOverview}
+                      className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      Refresh
+                    </button>
                   </div>
 
+                  {overview.traffic.topRoutes.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-8 text-center">No API requests recorded yet.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400">
+                            <th className="py-2 pr-3">Endpoint</th>
+                            <th className="py-2 px-3 text-right">Hits</th>
+                            <th className="py-2 px-3 text-right">Errors</th>
+                            <th className="py-2 pl-3 text-right">Avg Latency</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono tabular-nums">
+                          {overview.traffic.topRoutes.map((r) => (
+                            <tr key={r.route}>
+                              <td className="py-2 pr-3 text-slate-800 dark:text-slate-200 truncate max-w-[260px]">
+                                {r.route}
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold text-slate-900 dark:text-white">
+                                {r.hits}
+                              </td>
+                              <td
+                                className={`py-2 px-3 text-right ${
+                                  r.errors > 0 ? "text-rose-600 dark:text-rose-400 font-bold" : "text-slate-400"
+                                }`}
+                              >
+                                {r.errors}
+                              </td>
+                              <td className="py-2 pl-3 text-right text-slate-600 dark:text-slate-300">
+                                {r.avgLatencyMs} ms
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Recent API Errors & Active Cooldown Diagnostics */}
+              <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                      Recent API Errors & Model Cooldowns
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Ring buffer of the latest HTTP 4xx/5xx responses and active Gemini rate-limit cooldowns
+                    </p>
+                  </div>
+                  <span className="font-mono text-xs text-slate-500 dark:text-slate-400">
+                    {overview.traffic.recentErrors.length} error(s) ·{" "}
+                    {Object.keys(overview.ai.activeCooldowns).length} cooldown(s)
+                  </span>
+                </div>
+
+                {Object.keys(overview.ai.activeCooldowns).length > 0 && (
+                  <div className="flex flex-wrap gap-2 text-xs font-mono">
+                    {Object.entries(overview.ai.activeCooldowns).map(([model, secs]) => (
+                      <span
+                        key={model}
+                        className="px-3 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300"
+                      >
+                        {model}: {secs}s remaining
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {overview.traffic.recentErrors.length === 0 ? (
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold py-2">
+                    No API errors recorded since server start.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse font-mono tabular-nums">
+                      <thead>
+                        <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-sans text-slate-500">
+                          <th className="py-2 pr-3">Time</th>
+                          <th className="py-2 px-3">Route</th>
+                          <th className="py-2 px-3">Status</th>
+                          <th className="py-2 pl-3">Detail</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {overview.traffic.recentErrors.slice(0, 10).map((err, i) => (
+                          <tr key={i}>
+                            <td className="py-2 pr-3 text-slate-500 whitespace-nowrap">
+                              {new Date(err.timestamp).toLocaleTimeString()}
+                            </td>
+                            <td className="py-2 px-3 text-slate-800 dark:text-slate-200">{err.route}</td>
+                            <td className="py-2 px-3 text-rose-600 dark:text-rose-400 font-bold">
+                              {err.statusCode}
+                            </td>
+                            <td className="py-2 pl-3 text-slate-600 dark:text-slate-300 font-sans">
+                              {err.message}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 4: MULTI-STREAM LOGS & TELEMETRY EXPLORER                       */}
+      {/* =================================================================== */}
+      {sectionTab === "logs" && (
+        <div className="space-y-4">
+          {/* Unified Log Stream Summary Counters */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 font-mono tabular-nums">
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Audit Events</p>
+              <p className="text-xl font-bold text-slate-900 dark:text-white mt-0.5">
+                {logsSummary?.auditCount ?? auditLogs.length}
+              </p>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Auth & Logins</p>
+              <p className="text-xl font-bold text-indigo-600 dark:text-indigo-400 mt-0.5">
+                {logsSummary?.authCount ?? authLogs.length}
+              </p>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Student Activity</p>
+              <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                {logsSummary?.activityCount ?? activityLogs.length}
+              </p>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Email Logs</p>
+              <p className="text-xl font-bold text-rose-600 dark:text-rose-400 mt-0.5">
+                {logsSummary?.emailCount ?? emailLogs.length}
+              </p>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">API Errors</p>
+              <p className="text-xl font-bold text-amber-600 dark:text-amber-400 mt-0.5">
+                {logsSummary?.errorCount ?? apiErrorLogs.length}
+              </p>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">Total API Calls</p>
+              <p className="text-xl font-bold text-sky-600 dark:text-sky-400 mt-0.5">
+                {(logsSummary?.totalApiRequests ?? 0).toLocaleString()}
+              </p>
+            </div>
+          </div>
+
+          {/* Stream Switcher + Search + Export Toolbar */}
+          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 border-b border-slate-100 dark:border-slate-800">
+              {(
+                [
+                  { id: "audit", label: "Audit Trail", icon: ScrollText },
+                  { id: "auth", label: "Auth & Logins", icon: LogIn },
+                  { id: "activity", label: "Student Activity", icon: Activity },
+                  { id: "email", label: "Email Logs", icon: Mail },
+                  { id: "errors", label: "API Errors", icon: AlertTriangle },
+                ] as const
+              ).map((st) => {
+                const Icon = st.icon;
+                return (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setLogStream(st.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                      logStream === st.id
+                        ? "bg-indigo-600 text-white"
+                        : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{st.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={logSearch}
+                    onChange={(e) => setLogSearch(e.target.value)}
+                    placeholder={`Search ${logStream} logs...`}
+                    className="pl-9 pr-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 w-64"
+                  />
+                </div>
+
+                {logStream === "audit" && (
+                  <select
+                    value={logCategoryFilter}
+                    onChange={(e) => setLogCategoryFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none"
+                  >
+                    <option value="all">All Categories</option>
+                    <option value="auth">Authentication</option>
+                    <option value="admin">Admin Actions</option>
+                    <option value="system">System & Cache</option>
+                  </select>
+                )}
+
+                {logStream === "activity" && (
+                  <select
+                    value={activityFeatureFilter}
+                    onChange={(e) => setActivityFeatureFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none"
+                  >
+                    <option value="all">All Features</option>
+                    <option value="auth">Auth</option>
+                    <option value="quiz">Quizzes</option>
+                    <option value="games">Educational Games</option>
+                    <option value="files">File Vault</option>
+                    <option value="pdfs">Notes & PDFs</option>
+                    <option value="lectures">Video Lectures</option>
+                    <option value="dictionary">Dictionary</option>
+                    <option value="tasks">Tasks</option>
+                    <option value="calendar">Calendar</option>
+                    <option value="gmail">Gmail</option>
+                    <option value="profile">Profile</option>
+                  </select>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => handleExportLogs("csv")}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Export CSV</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportLogs("json")}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <FileJson className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Export JSON</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetchLogsSummary();
+                    fetchActiveLogStream();
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  Refresh
+                </button>
+                {logStream !== "auth" && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearStream(logStream)}
+                    className="px-3 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-xs font-semibold text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Clear Stream
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Stream Data Table */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              {logStream === "audit" && (
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      <th className="py-3 px-4">Timestamp</th>
+                      <th className="py-3 px-4">Category</th>
+                      <th className="py-3 px-4">Action</th>
+                      <th className="py-3 px-4">Actor</th>
+                      <th className="py-3 px-4">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {isLoadingLogs ? (
+                      <tr>
+                        <td colSpan={5} className="py-10 text-center text-slate-400">
+                          Loading server audit logs...
+                        </td>
+                      </tr>
+                    ) : filteredAuditLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-12 text-center text-slate-400">
+                          No audit events matched.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAuditLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-4 font-mono tabular-nums text-[11px] text-slate-500 whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4">
+                            <span
+                              className={`font-semibold uppercase text-[11px] ${
+                                log.category === "admin"
+                                  ? "text-amber-600 dark:text-amber-400"
+                                  : log.category === "auth"
+                                  ? "text-indigo-600 dark:text-indigo-400"
+                                  : "text-emerald-600 dark:text-emerald-400"
+                              }`}
+                            >
+                              {log.category}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-4 font-mono font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                            {log.action}
+                          </td>
+                          <td className="py-2.5 px-4 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                            {log.actor}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">
+                            {log.details}
+                            {log.target && <span className="text-slate-400 font-mono"> · {log.target}</span>}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {logStream === "auth" && (
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      <th className="py-3 px-4">Timestamp</th>
+                      <th className="py-3 px-4">Event</th>
+                      <th className="py-3 px-4">Account</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {isLoadingLogs ? (
+                      <tr>
+                        <td colSpan={5} className="py-10 text-center text-slate-400">
+                          Loading authentication logs...
+                        </td>
+                      </tr>
+                    ) : filteredAuthLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-12 text-center text-slate-400">
+                          No login or sign-up events recorded yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAuthLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-4 font-mono tabular-nums text-[11px] text-slate-500 whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4 font-mono font-semibold text-indigo-600 dark:text-indigo-400 whitespace-nowrap">
+                            {log.action}
+                          </td>
+                          <td className="py-2.5 px-4 font-mono text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                            {log.actor}
+                          </td>
+                          <td className="py-2.5 px-4">
+                            <span
+                              className={`text-[11px] font-bold uppercase ${
+                                log.status === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500"
+                              }`}
+                            >
+                              {log.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">
+                            {log.details}
+                            {log.target && <span className="text-slate-400 font-mono"> · {log.target}</span>}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {logStream === "activity" && (
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      <th className="py-3 px-4">Timestamp</th>
+                      <th className="py-3 px-4">Feature</th>
+                      <th className="py-3 px-4">Student</th>
+                      <th className="py-3 px-4">Action</th>
+                      <th className="py-3 px-4">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {isLoadingLogs ? (
+                      <tr>
+                        <td colSpan={5} className="py-10 text-center text-slate-400">
+                          Loading student activity stream...
+                        </td>
+                      </tr>
+                    ) : filteredActivityLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-12 text-center text-slate-400">
+                          No student feature telemetry logged yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredActivityLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-4 font-mono tabular-nums text-[11px] text-slate-500 whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4 font-semibold uppercase text-[11px] text-emerald-600 dark:text-emerald-400">
+                            {log.feature}
+                          </td>
+                          <td className="py-2.5 px-4">
+                            <p className="font-semibold text-slate-900 dark:text-white">{log.userName || log.userEmail}</p>
+                            <p className="text-[11px] font-mono text-slate-400">{log.userEmail}</p>
+                          </td>
+                          <td className="py-2.5 px-4 font-mono font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                            {log.action}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">{log.details}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {logStream === "email" && (
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      <th className="py-3 px-4">Timestamp</th>
+                      <th className="py-3 px-4">Direction</th>
+                      <th className="py-3 px-4">Recipient</th>
+                      <th className="py-3 px-4">Subject & Preview</th>
+                      <th className="py-3 px-4 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {isLoadingLogs ? (
+                      <tr>
+                        <td colSpan={5} className="py-10 text-center text-slate-400">
+                          Loading email delivery logs...
+                        </td>
+                      </tr>
+                    ) : filteredEmailLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-12 text-center text-slate-400">
+                          No email dispatch records logged yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredEmailLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-4 font-mono tabular-nums text-[11px] text-slate-500 whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4 font-mono uppercase text-[11px] text-slate-500">
+                            {log.direction}
+                          </td>
+                          <td className="py-2.5 px-4 font-mono text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                            {log.to}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">
+                            <p className="font-semibold text-slate-900 dark:text-white">{log.subject}</p>
+                            {log.error ? (
+                              <p className="text-[11px] text-rose-500">{log.error}</p>
+                            ) : (
+                              log.snippet && <p className="text-[11px] text-slate-400 truncate max-w-md">{log.snippet}</p>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-4 text-right">
+                            <span
+                              className={`text-[11px] font-bold uppercase ${
+                                log.status === "sent"
+                                  ? "text-emerald-600 dark:text-emerald-400"
+                                  : log.status === "failed"
+                                  ? "text-rose-500"
+                                  : "text-indigo-500"
+                              }`}
+                            >
+                              {log.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {logStream === "errors" && (
+                <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-sans font-semibold text-slate-500 dark:text-slate-400">
+                      <th className="py-3 px-4">Timestamp</th>
+                      <th className="py-3 px-4">Route</th>
+                      <th className="py-3 px-4">HTTP Status</th>
+                      <th className="py-3 px-4">Error Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {isLoadingLogs ? (
+                      <tr>
+                        <td colSpan={4} className="py-10 text-center font-sans text-slate-400">
+                          Loading API error buffer...
+                        </td>
+                      </tr>
+                    ) : filteredApiErrorLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-12 text-center font-sans text-emerald-600 dark:text-emerald-400 font-semibold">
+                          Zero API errors recorded in active server buffer.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredApiErrorLogs.map((err, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-4 text-[11px] text-slate-500 whitespace-nowrap">
+                            {new Date(err.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-800 dark:text-slate-200">{err.route}</td>
+                          <td className="py-2.5 px-4 font-bold text-rose-600 dark:text-rose-400">{err.statusCode}</td>
+                          <td className="py-2.5 px-4 font-sans text-slate-600 dark:text-slate-300">{err.message}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* MODAL 1: Complete 360° Student Dossier & Live Backend Inspection    */}
+      {/* =================================================================== */}
+      {liveInspectUser && (() => {
+        const details = getStudentFullDetails(liveInspectUser.id);
+        const completedTasks = details.tasks.filter((t) => t.status === "completed" || t.completed);
+        const filteredInspectTasks = details.tasks.filter((t) => {
+          const isDone = t.status === "completed" || t.completed;
+          if (taskInspectFilter === "completed") return isDone;
+          if (taskInspectFilter === "pending") return !isDone;
+          return true;
+        });
+        const avgQuizPct =
+          details.quizHistory.length > 0
+            ? Math.round(
+                details.quizHistory.reduce((acc, q) => acc + Number(q.percentage || 0), 0) /
+                  details.quizHistory.length
+              )
+            : 0;
+        const rawDossierPayload = {
+          user: {
+            id: liveInspectUser.id,
+            name: liveInspectUser.name,
+            email: liveInspectUser.email,
+            password: liveInspectUser.passwordText,
+            role: liveInspectUser.role || "student",
+            grade: liveInspectUser.grade,
+            schoolOrCollege: liveInspectUser.schoolOrCollege,
+            targetExam: liveInspectUser.targetExam,
+            favoriteSubject: liveInspectUser.favoriteSubject,
+            dailyGoalHours: liveInspectUser.dailyGoalHours,
+            phone: liveInspectUser.phone,
+            bio: liveInspectUser.bio,
+            joinedDate: liveInspectUser.joinedDate,
+            lastLogin: liveInspectUser.lastLogin,
+            isOnline: liveInspectUser.isOnline,
+          },
+          isolatedData: details,
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-5xl max-h-[93vh] flex flex-col shadow-2xl overflow-hidden">
+              {/* Header */}
+              <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/70 dark:bg-slate-950/70 shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`w-12 h-12 rounded-xl bg-gradient-to-br ${
+                      liveInspectUser.avatarColor || "from-indigo-500 to-purple-600"
+                    } text-white font-bold text-sm flex items-center justify-center shrink-0`}
+                  >
+                    {liveInspectUser.name
+                      .split(" ")
+                      .map((n) => n[0])
+                      .join("")
+                      .slice(0, 2)
+                      .toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-base font-bold text-slate-900 dark:text-white truncate">
+                        {liveInspectUser.name}
+                      </h3>
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
+                          liveInspectUser.isOnline
+                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                            : "bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                        }`}
+                      >
+                        {liveInspectUser.isOnline ? "Online Now" : `Offline · ${liveInspectUser.lastActiveFormatted}`}
+                      </span>
+                      {(liveInspectUser.id === "admin0011" || liveInspectUser.role === "admin") && (
+                        <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-bold uppercase">
+                          Master Admin
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5 font-mono">
+                      {liveInspectUser.email} · {liveInspectUser.grade} · ID: {liveInspectUser.id}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  {liveInspectUser.email.includes("@") && (
+                    <button
+                      type="button"
+                      onClick={() => openQuickEmailForUser(liveInspectUser.email, liveInspectUser.name)}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-600 text-rose-600 dark:text-rose-300 hover:text-white font-semibold text-xs border border-rose-200 dark:border-rose-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      title="Compose Gmail message to this student"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>Email Student</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleRefreshInspectLive}
+                    disabled={isRefreshingInspect}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Pull latest user data from Express backend"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingInspect ? "animate-spin text-indigo-500" : ""}`} />
+                    <span>{isRefreshingInspect ? "Syncing..." : "Sync Live"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportUserDossierJson}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Download complete JSON dossier for this user"
+                  >
+                    <Download className="w-3.5 h-3.5 text-amber-500" />
+                    <span className="hidden md:inline">Export JSON</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLaunchStudentWorkspace}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Launch Workspace</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInspectUser(null)}
+                    className="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Sub-tabs */}
+              <div className="px-4 sm:px-5 pt-2.5 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar text-xs font-semibold pb-2.5">
+                  {[
+                    { id: "overview", label: "360° Overview", icon: UserCheck },
+                    { id: "settings", label: "Edit Profile", icon: Sliders },
+                    { id: "tasks", label: `Tasks (${details.tasks.length})`, icon: CheckSquare },
+                    { id: "files", label: `Files (${details.files.length})`, icon: Folder },
+                    { id: "calendar", label: `Calendar (${details.calendar.length})`, icon: Calendar },
+                    {
+                      id: "learning",
+                      label: `Notes & Lectures (${details.downloadedPdfs.length + details.customPdfs.length + details.savedLectures.length})`,
+                      icon: BookOpen,
+                    },
+                    {
+                      id: "activity",
+                      label: `Quizzes & Logs (${details.quizHistory.length + details.chatHistory.length + details.notifications.length})`,
+                      icon: Brain,
+                    },
+                    {
+                      id: "gaming",
+                      label: `XP, Streak & Raw (${details.gameProfile?.xp ?? liveInspectUser.gameXp})`,
+                      icon: Award,
+                    },
+                  ].map((tab) => {
+                    const Icon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setInspectTab(tab.id as any)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                          inspectTab === tab.id
+                            ? "bg-indigo-600 text-white"
+                            : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        <span>{tab.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5">
+                {/* TAB 1: 360° OVERVIEW */}
+                {inspectTab === "overview" && (
+                  <div className="space-y-5">
+                    {/* Complete Data KPI Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums">
+                      <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[11px] font-sans text-slate-500">Level & Total XP</p>
+                        <p className="text-lg font-bold text-indigo-600 dark:text-indigo-400 mt-0.5">
+                          Lvl {details.gameProfile?.level || 1} · {Number(details.gameProfile?.xp || 0).toLocaleString()} XP
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-400 truncate">
+                          {details.gameProfile?.title || "Novice Scholar"}
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[11px] font-sans text-slate-500">Study Tasks</p>
+                        <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                          {completedTasks.length} / {details.tasks.length} Done
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-400">
+                          Streak: {details.studyStreak || 0} days
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[11px] font-sans text-slate-500">Quizzes & Vocab</p>
+                        <p className="text-lg font-bold text-purple-600 dark:text-purple-400 mt-0.5">
+                          {details.quizHistory.length} Quizzes ({avgQuizPct}%)
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-400">
+                          {details.dictBookmarks.length} bookmarks · {details.dictRecents.length} searches
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[11px] font-sans text-slate-500">Files, PDFs & Lectures</p>
+                        <p className="text-lg font-bold text-amber-600 dark:text-amber-400 mt-0.5">
+                          {details.files.length} Files · {details.downloadedPdfs.length + details.customPdfs.length} PDFs
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-400">
+                          {details.savedLectures.length} saved · {details.watchedLectures.length} watched
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Profile & Credentials Dossier Card + Direct Message */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                      <div className="lg:col-span-7 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-bold text-slate-900 dark:text-white text-sm">
+                            Identity, Credentials & Academic Profile
+                          </h4>
+                          <button
+                            type="button"
+                            onClick={() => setInspectTab("settings")}
+                            className="text-indigo-600 dark:text-indigo-400 font-semibold hover:underline cursor-pointer"
+                          >
+                            Edit All Fields →
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-[11px] text-slate-400">Email / Login ID</p>
+                            <div className="flex items-center gap-1.5 font-mono font-semibold text-slate-900 dark:text-white">
+                              <span className="truncate">{liveInspectUser.email}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(liveInspectUser.email, "ov-email")}
+                                className="text-slate-400 hover:text-indigo-500 cursor-pointer"
+                              >
+                                {copiedKey === "ov-email" ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-[11px] text-slate-400">Password</p>
+                            <div className="flex items-center gap-1.5 font-mono font-semibold text-amber-600 dark:text-amber-300">
+                              <span>{showInspectPassword ? liveInspectUser.passwordText : "••••••••"}</span>
+                              <button
+                                type="button"
+                                onClick={() => setShowInspectPassword(!showInspectPassword)}
+                                className="text-slate-400 hover:text-indigo-500 cursor-pointer"
+                              >
+                                {showInspectPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(liveInspectUser.passwordText, "ov-pass")}
+                                className="text-slate-400 hover:text-amber-500 cursor-pointer"
+                              >
+                                {copiedKey === "ov-pass" ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-[11px] text-slate-400">School / College</p>
+                            <p className="font-semibold text-slate-800 dark:text-slate-200">
+                              {liveInspectUser.schoolOrCollege || "Not specified"}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] text-slate-400">Target Board / Exam</p>
+                            <p className="font-semibold text-slate-800 dark:text-slate-200">
+                              {liveInspectUser.targetExam || "Not specified"}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] text-slate-400">Favorite Subject & Goal</p>
+                            <p className="font-semibold text-slate-800 dark:text-slate-200">
+                              {liveInspectUser.favoriteSubject || "General"} · {liveInspectUser.dailyGoalHours || 3} hrs/day
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] text-slate-400">Phone & Joined</p>
+                            <p className="font-semibold text-slate-800 dark:text-slate-200 font-mono">
+                              {liveInspectUser.phone || "No phone"} · {liveInspectUser.joinedDate}
+                            </p>
+                          </div>
+                        </div>
+                        {liveInspectUser.bio && (
+                          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+                            <p className="text-[11px] text-slate-400 mb-0.5">Student Bio</p>
+                            <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{liveInspectUser.bio}</p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Send Direct Targeted Alert to this Student */}
+                      <form
+                        onSubmit={handleSendDirectNotification}
+                        className="lg:col-span-5 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Bell className="w-4 h-4 text-indigo-500" />
+                          <h4 className="font-bold text-slate-900 dark:text-white text-sm">
+                            Send Direct Student Alert
+                          </h4>
+                        </div>
+                        <input
+                          type="text"
+                          required
+                          value={directNotifTitle}
+                          onChange={(e) => setDirectNotifTitle(e.target.value)}
+                          placeholder="Alert title (e.g. Exam Homework Reminder)"
+                          className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                        />
+                        <textarea
+                          rows={2}
+                          required
+                          value={directNotifMessage}
+                          onChange={(e) => setDirectNotifMessage(e.target.value)}
+                          placeholder={`Direct message for ${liveInspectUser.name}...`}
+                          className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 resize-none"
+                        />
+                        <div className="flex items-center justify-between gap-2">
+                          <select
+                            value={directNotifType}
+                            onChange={(e) => setDirectNotifType(e.target.value as any)}
+                            className="px-2.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                          >
+                            <option value="info">Info</option>
+                            <option value="urgent">Urgent</option>
+                            <option value="reminder">Reminder</option>
+                            <option value="security">Security</option>
+                          </select>
+                          <button
+                            type="submit"
+                            disabled={isSendingDirectNotif}
+                            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold cursor-pointer disabled:opacity-50"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>{isSendingDirectNotif ? "Sending..." : "Deliver Alert"}</span>
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: FULL EDIT PROFILE & CREDENTIALS */}
+                {inspectTab === "settings" && (
+                  <div className="space-y-4">
+                    {inspectSettingsSuccess && (
+                      <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                        <span>{inspectSettingsSuccess}</span>
+                      </div>
+                    )}
+
+                    {inspectSettingsError && (
+                      <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+                        <span>{inspectSettingsError}</span>
+                      </div>
+                    )}
+
+                    <form onSubmit={handleSaveStudentSettingsSeparately} className="space-y-4 text-xs">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Full Student Name
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={inspectEditName}
+                            onChange={(e) => setInspectEditName(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Student Email or Login ID
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={inspectEditEmail}
+                            onChange={(e) => setInspectEditEmail(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="font-semibold text-slate-700 dark:text-slate-300">
+                              Account Password
+                            </label>
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => setShowInspectPassword(!showInspectPassword)}
+                                className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
+                              >
+                                {showInspectPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                <span>{showInspectPassword ? "Mask" : "Show"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(inspectEditPassword, "inspect-pass-copy")}
+                                className="text-[11px] text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
+                              >
+                                {copiedKey === "inspect-pass-copy" ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                                <span>Copy</span>
+                              </button>
+                            </div>
+                          </div>
+                          <input
+                            type={showInspectPassword ? "text" : "password"}
+                            required
+                            value={inspectEditPassword}
+                            onChange={(e) => setInspectEditPassword(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-amber-300 font-mono font-semibold focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Phone Number
+                          </label>
+                          <div className="relative">
+                            <Phone className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              value={inspectEditPhone}
+                              onChange={(e) => setInspectEditPhone(e.target.value)}
+                              placeholder="+92 300 0000000"
+                              className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Class / Academic Grade
+                          </label>
+                          <select
+                            value={inspectEditGrade}
+                            onChange={(e) => setInspectEditGrade(e.target.value as StudentGrade)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          >
+                            {GRADE_OPTIONS.map((g) => (
+                              <option key={g} value={g}>
+                                {g}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            School or College Name
+                          </label>
+                          <input
+                            type="text"
+                            value={inspectEditSchool}
+                            onChange={(e) => setInspectEditSchool(e.target.value)}
+                            placeholder="e.g. SPS College Batkhela"
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                        <div className="sm:col-span-2">
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Target Board Examination
+                          </label>
+                          <input
+                            type="text"
+                            value={inspectEditTargetExam}
+                            onChange={(e) => setInspectEditTargetExam(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Favorite Subject
+                          </label>
+                          <input
+                            type="text"
+                            value={inspectEditSubject}
+                            onChange={(e) => setInspectEditSubject(e.target.value)}
+                            placeholder="e.g. Physics"
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Daily Goal (Hours)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={16}
+                            value={inspectEditGoalHours}
+                            onChange={(e) => setInspectEditGoalHours(Number(e.target.value))}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono tabular-nums focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Student Bio / Notes
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={inspectEditBio}
+                          onChange={(e) => setInspectEditBio(e.target.value)}
+                          placeholder="Academic background, goals, or admin notes..."
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 resize-none"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800">
+                        {liveInspectUser.id !== "admin0011" ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmResetUser(liveInspectUser)}
+                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 font-semibold transition-colors cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Reset Study Data</span>
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">Protected master admin account</span>
+                        )}
+
+                        <button
+                          type="submit"
+                          disabled={isSavingInspectSettings}
+                          className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold transition-colors cursor-pointer flex items-center gap-2"
+                        >
+                          {isSavingInspectSettings ? (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                              <span>Saving...</span>
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>Save Student Settings</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* TAB 3: TASKS */}
+                {inspectTab === "tasks" && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold">
+                        {(["all", "pending", "completed"] as const).map((f) => (
+                          <button
+                            key={f}
+                            type="button"
+                            onClick={() => setTaskInspectFilter(f)}
+                            className={`px-3 py-1 rounded-lg capitalize cursor-pointer ${
+                              taskInspectFilter === f
+                                ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+                                : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
+                            }`}
+                          >
+                            {f}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-xs font-mono text-slate-500">
+                        {completedTasks.length} completed / {details.tasks.length} total
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {filteredInspectTasks.length === 0 ? (
+                        <div className="p-8 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
+                          No tasks matching this filter for {liveInspectUser.name}.
+                        </div>
+                      ) : (
+                        filteredInspectTasks.map((task) => {
+                          const isDone = task.status === "completed" || task.completed;
+                          return (
+                            <div
+                              key={task.id}
+                              className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3 text-xs"
+                            >
+                              <div className="flex items-start gap-2.5 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleStudentTask(task.id)}
+                                  className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
+                                    isDone
+                                      ? "bg-emerald-600 border-emerald-600 text-white"
+                                      : "border-slate-300 dark:border-slate-700 hover:border-indigo-500"
+                                  }`}
+                                  title={isDone ? "Mark as incomplete" : "Mark as completed"}
+                                >
+                                  {isDone && <Check className="w-3 h-3" />}
+                                </button>
+                                <div className="space-y-0.5 min-w-0">
+                                  <p
+                                    className={`font-semibold ${
+                                      isDone ? "line-through text-slate-400" : "text-slate-900 dark:text-white"
+                                    }`}
+                                  >
+                                    {task.title}
+                                  </p>
+                                  {task.description && (
+                                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{task.description}</p>
+                                  )}
+                                  <p className="text-[11px] text-slate-400 font-mono">
+                                    Priority: {task.priority || "Normal"} · Due: {task.dueDate || "Ongoing"} · Category:{" "}
+                                    {task.category || "General"}
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStudentTask(task.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer shrink-0"
+                                title="Delete task"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    <form
+                      onSubmit={handleAddStudentTask}
+                      className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs"
+                    >
+                      <p className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <Plus className="w-4 h-4 text-indigo-500" />
+                        <span>Assign New Task to {liveInspectUser.name}</span>
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                        <input
+                          type="text"
+                          required
+                          placeholder="Task title (e.g. Physics Ch 4 derivations)"
+                          value={newTaskTitle}
+                          onChange={(e) => setNewTaskTitle(e.target.value)}
+                          className="sm:col-span-2 px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Category (e.g. Physics)"
+                          value={newTaskCategory}
+                          onChange={(e) => setNewTaskCategory(e.target.value)}
+                          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                        />
+                        <select
+                          value={newTaskPriority}
+                          onChange={(e) => setNewTaskPriority(e.target.value as any)}
+                          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                        >
+                          <option value="urgent">Urgent</option>
+                          <option value="high">High</option>
+                          <option value="medium">Medium</option>
+                          <option value="low">Low</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <input
+                          type="date"
+                          value={newTaskDueDate}
+                          onChange={(e) => setNewTaskDueDate(e.target.value)}
+                          className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs"
+                        />
+                        <button
+                          type="submit"
+                          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-colors cursor-pointer"
+                        >
+                          Assign Task
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* TAB 4: FILES & VOICE MEMOS */}
+                {inspectTab === "files" && (
                   <div className="space-y-2.5">
-                    {getStudentFullDetails(inspectUser.id).files.length === 0 ? (
-                      <div className="p-8 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
+                    {details.files.length === 0 ? (
+                      <div className="p-8 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
                         No files or voice memos recorded by this student yet.
                       </div>
                     ) : (
-                      getStudentFullDetails(inspectUser.id).files.map((file) => (
+                      details.files.map((file) => (
                         <div
                           key={file.id}
-                          className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 text-xs"
+                          className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3 text-xs"
                         >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="p-2.5 rounded-xl bg-indigo-100 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 shrink-0">
+                          <div className="flex items-start gap-3 min-w-0">
+                            <div className="p-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 shrink-0">
                               {file.category === "audio" ? (
                                 <Volume2 className="w-4 h-4" />
                               ) : (
                                 <FileText className="w-4 h-4" />
                               )}
                             </div>
-                            <div className="min-w-0">
-                              <p className="font-bold text-slate-900 dark:text-white truncate">
-                                {file.name}
+                            <div className="min-w-0 space-y-1">
+                              <p className="font-semibold text-slate-900 dark:text-white truncate">{file.name}</p>
+                              <p className="text-[11px] text-slate-500 font-mono tabular-nums">
+                                {Math.round((file.size || 1024) / 1024)} KB · {file.mimeType || file.category || "File"} ·{" "}
+                                {file.uploadDate || "Recently"}
+                                {file.isEncrypted ? " · Encrypted" : ""}
                               </p>
-                              <p className="text-[11px] text-slate-500 truncate">
-                                {file.contentSnippet || "Study resource document"}
-                              </p>
-                              <div className="flex items-center gap-2 text-[10px] text-slate-400 pt-0.5">
-                                <span>{Math.round((file.size || 1024) / 1024)} KB</span>
-                                <span>•</span>
-                                <span>Uploaded: {file.uploadDate || "Recently"}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">
-                            {file.category || "File"}
-                          </span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 4: Study Calendar */}
-              {inspectTab === "calendar" && (
-                <div className="space-y-4 animate-fadeIn">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      Study Calendar & Examination Schedule
-                    </h4>
-                    <p className="text-xs text-slate-500">
-                      Scheduled revision events for {inspectUser.name}
-                    </p>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {getStudentFullDetails(inspectUser.id).calendar.length === 0 ? (
-                      <div className="p-8 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
-                        No calendar events scheduled yet by this student.
-                      </div>
-                    ) : (
-                      getStudentFullDetails(inspectUser.id).calendar.map((ev) => (
-                        <div
-                          key={ev.id}
-                          className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 text-xs"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="p-2.5 rounded-xl bg-purple-100 dark:bg-purple-950 text-purple-600 dark:text-purple-400 shrink-0">
-                              <Calendar className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <p className="font-bold text-slate-900 dark:text-white">{ev.title}</p>
-                              {ev.description && (
-                                <p className="text-[11px] text-slate-500">{ev.description}</p>
+                              {file.contentSnippet && (
+                                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                                  {file.contentSnippet}
+                                </p>
                               )}
-                              <p className="text-[10px] text-slate-400">
-                                {ev.startTime ? new Date(ev.startTime).toLocaleDateString() : "Upcoming"}
-                              </p>
+                              {Array.isArray(file.tags) && file.tags.length > 0 && (
+                                <p className="text-[10px] font-mono text-indigo-500">
+                                  Tags: {file.tags.join(", ")}
+                                </p>
+                              )}
                             </div>
                           </div>
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-purple-50 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300">
-                            {ev.category || "Study"}
-                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteStudentFile(file.id)}
+                            className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer shrink-0"
+                            title="Delete file from student vault"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       ))
                     )}
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* TAB 5: Saved Notes */}
-              {inspectTab === "notes" && (
-                <div className="space-y-4 animate-fadeIn">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      Curriculum Notes & Downloaded PDF Library
-                    </h4>
-                    <p className="text-xs text-slate-500">
-                      Curriculum guides downloaded or saved by {inspectUser.name}
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    {getStudentFullDetails(inspectUser.id).downloadedPdfs.length === 0 ? (
-                      <div className="p-8 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
-                        No curriculum notes downloaded yet by this student.
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        {getStudentFullDetails(inspectUser.id).downloadedPdfs.map((pdfId, idx) => (
+                {/* TAB 5: CALENDAR */}
+                {inspectTab === "calendar" && (
+                  <div className="space-y-4">
+                    <div className="space-y-2.5">
+                      {details.calendar.length === 0 ? (
+                        <div className="p-8 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
+                          No calendar events scheduled for this student.
+                        </div>
+                      ) : (
+                        details.calendar.map((ev) => (
                           <div
-                            key={idx}
-                            className="p-3 rounded-2xl bg-amber-50/40 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 flex items-center gap-2.5 text-xs"
+                            key={ev.id}
+                            className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3 text-xs"
                           >
-                            <FileDown className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                            <div className="min-w-0">
-                              <p className="font-mono font-bold text-slate-900 dark:text-white truncate">
-                                {pdfId}
+                            <div className="min-w-0 space-y-0.5">
+                              <p className="font-semibold text-slate-900 dark:text-white truncate">{ev.title}</p>
+                              {ev.description && (
+                                <p className="text-[11px] text-slate-600 dark:text-slate-400">{ev.description}</p>
+                              )}
+                              <p className="text-[11px] text-slate-500 font-mono">
+                                {ev.startTime ? new Date(ev.startTime).toLocaleString() : "Upcoming"} · Category:{" "}
+                                {ev.category || "Study"} · Source: {ev.source || "OmniSync"}
                               </p>
-                              <p className="text-[10px] text-slate-500">Verified Board Approved Guide</p>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCalendarEvent(ev.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer shrink-0"
+                              title="Delete event"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
+                        ))
+                      )}
+                    </div>
+
+                    <form
+                      onSubmit={handleAddCalendarEvent}
+                      className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs"
+                    >
+                      <p className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <Calendar className="w-4 h-4 text-indigo-500" />
+                        <span>Schedule Study Session for {liveInspectUser.name}</span>
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <input
+                          type="text"
+                          required
+                          placeholder="Event title (e.g. Mock Biology Test)"
+                          value={newEventTitle}
+                          onChange={(e) => setNewEventTitle(e.target.value)}
+                          className="sm:col-span-2 px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                        />
+                        <select
+                          value={newEventCategory}
+                          onChange={(e) => setNewEventCategory(e.target.value as any)}
+                          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                        >
+                          <option value="work">Study / Work</option>
+                          <option value="deadline">Exam Deadline</option>
+                          <option value="meeting">Mentorship</option>
+                          <option value="personal">Personal</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <input
+                          type="date"
+                          value={newEventDate}
+                          onChange={(e) => setNewEventDate(e.target.value)}
+                          className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs"
+                        />
+                        <button
+                          type="submit"
+                          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold cursor-pointer"
+                        >
+                          Add Calendar Event
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* TAB 6: NOTES, LECTURES & DICTIONARY */}
+                {inspectTab === "learning" && (
+                  <div className="space-y-5 text-xs">
+                    {/* Downloaded & Custom PDFs */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 text-sm">
+                          <FileDown className="w-4 h-4 text-amber-500" />
+                          <span>Downloaded Curriculum PDFs ({details.downloadedPdfs.length})</span>
+                        </h4>
+                        {details.downloadedPdfs.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleClearDataSlice("downloaded_pdf_ids", "downloaded PDFs")}
+                            className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                          >
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+                      {details.downloadedPdfs.length === 0 ? (
+                        <p className="text-slate-400">No curriculum PDFs downloaded yet.</p>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {details.downloadedPdfs.map((pdfId) => (
+                            <div
+                              key={pdfId}
+                              className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
+                            >
+                              <span className="font-mono font-semibold text-slate-800 dark:text-slate-200 truncate">
+                                {pdfId}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStudentPdf(pdfId, "downloaded")}
+                                className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer shrink-0"
+                                title="Remove downloaded PDF record"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {details.customPdfs.length > 0 && (
+                        <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                          <p className="font-bold text-slate-800 dark:text-slate-200">
+                            Custom Student PDFs ({details.customPdfs.length})
+                          </p>
+                          {details.customPdfs.map((cp: any) => (
+                            <div
+                              key={cp.id}
+                              className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <p className="font-semibold text-slate-900 dark:text-white truncate">{cp.title}</p>
+                                <p className="text-[11px] text-slate-500">
+                                  {cp.subject} · {cp.grade} · {cp.pageCount || 1} pages
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStudentPdf(cp.id, "custom")}
+                                className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer shrink-0"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Video Lectures */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                      <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 text-sm">
+                        <Video className="w-4 h-4 text-indigo-500" />
+                        <span>Video Lectures Activity</span>
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800 dark:text-slate-200">
+                              Saved Lectures ({details.savedLectures.length})
+                            </span>
+                            {details.savedLectures.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleClearDataSlice("saved_lectures", "saved lectures")}
+                                className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                          {details.savedLectures.length === 0 ? (
+                            <p className="text-slate-400">None saved</p>
+                          ) : (
+                            <div className="space-y-1 max-h-32 overflow-y-auto font-mono text-[11px]">
+                              {details.savedLectures.map((id, i) => (
+                                <p key={i} className="truncate text-slate-600 dark:text-slate-300">
+                                  • {id}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800 dark:text-slate-200">
+                              Watched Lectures ({details.watchedLectures.length})
+                            </span>
+                            {details.watchedLectures.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleClearDataSlice("watched_lectures", "watched lectures")}
+                                className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                          {details.watchedLectures.length === 0 ? (
+                            <p className="text-slate-400">None watched</p>
+                          ) : (
+                            <div className="space-y-1 max-h-32 overflow-y-auto font-mono text-[11px]">
+                              {details.watchedLectures.map((id, i) => (
+                                <p key={i} className="truncate text-slate-600 dark:text-slate-300">
+                                  ✓ {id}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Academic Dictionary */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                      <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 text-sm">
+                        <BookOpen className="w-4 h-4 text-emerald-500" />
+                        <span>Academic Dictionary & Vocabulary</span>
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1">
+                          <p className="font-bold text-slate-800 dark:text-slate-200">
+                            Bookmarks ({details.dictBookmarks.length})
+                          </p>
+                          <p className="text-[11px] text-slate-500 break-words">
+                            {details.dictBookmarks.length > 0 ? details.dictBookmarks.join(", ") : "No bookmarked words"}
+                          </p>
+                        </div>
+                        <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1">
+                          <p className="font-bold text-slate-800 dark:text-slate-200">
+                            Recent Searches ({details.dictRecents.length})
+                          </p>
+                          <p className="text-[11px] text-slate-500 break-words">
+                            {details.dictRecents.length > 0 ? details.dictRecents.join(", ") : "No recent searches"}
+                          </p>
+                        </div>
+                        <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1">
+                          <p className="font-bold text-slate-800 dark:text-slate-200">
+                            AI Looked-Up Words ({details.dictCustomWords.length})
+                          </p>
+                          <p className="text-[11px] text-slate-500 break-words">
+                            {details.dictCustomWords.length > 0
+                              ? details.dictCustomWords.map((w: any) => w.word).join(", ")
+                              : "None saved"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 7: QUIZZES, AI CHATS, VOICE & NOTIFICATIONS */}
+                {inspectTab === "activity" && (
+                  <div className="space-y-5 text-xs">
+                    {/* Quiz History */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 text-sm">
+                          <Brain className="w-4 h-4 text-purple-500" />
+                          <span>Completed Quiz History ({details.quizHistory.length})</span>
+                        </h4>
+                        {details.quizHistory.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleClearDataSlice("quiz_history", "quiz history")}
+                            className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                          >
+                            Clear Quiz History
+                          </button>
+                        )}
+                      </div>
+                      {details.quizHistory.length === 0 ? (
+                        <p className="text-slate-400">No completed quizzes recorded for this student yet.</p>
+                      ) : (
+                        <div className="space-y-2 max-h-48 overflow-y-auto">
+                          {details.quizHistory.map((q: any, idx: number) => (
+                            <div
+                              key={q.id || idx}
+                              className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
+                            >
+                              <div>
+                                <p className="font-semibold text-slate-900 dark:text-white">{q.topic || "Study Quiz"}</p>
+                                <p className="text-[11px] text-slate-400 font-mono">
+                                  {q.correctAnswers ?? q.score ?? 0}/{q.totalQuestions} correct ·{" "}
+                                  {q.completedAt ? new Date(q.completedAt).toLocaleString() : "Completed"}
+                                </p>
+                              </div>
+                              <span
+                                className={`px-2.5 py-1 rounded-md font-mono font-bold ${
+                                  Number(q.percentage || 0) >= 70
+                                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                                }`}
+                              >
+                                {q.percentage}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* AI Chat & Voice History */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                            <MessageSquare className="w-4 h-4 text-indigo-500" />
+                            <span>AI Tutor Chat ({details.chatHistory.length})</span>
+                          </h4>
+                          {details.chatHistory.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleClearDataSlice("chat_history", "AI chat history")}
+                              className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                          {details.chatHistory.length === 0 ? (
+                            <p className="text-slate-400">No AI chat messages recorded yet.</p>
+                          ) : (
+                            details.chatHistory.map((m: any, i: number) => (
+                              <div
+                                key={m.id || i}
+                                className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"
+                              >
+                                <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-0.5">
+                                  <span className="font-bold uppercase text-indigo-500">{m.sender}</span>
+                                  <span>{m.timestamp}</span>
+                                </div>
+                                <p className="text-slate-700 dark:text-slate-300 leading-relaxed line-clamp-3">
+                                  {m.text}
+                                </p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                            <Volume2 className="w-4 h-4 text-emerald-500" />
+                            <span>Voice Assistant ({details.voiceHistory.length})</span>
+                          </h4>
+                          {details.voiceHistory.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleClearDataSlice("voice_history", "voice history")}
+                              className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                          {details.voiceHistory.length === 0 ? (
+                            <p className="text-slate-400">No voice assistant turns recorded yet.</p>
+                          ) : (
+                            details.voiceHistory.map((v: any, i: number) => (
+                              <div
+                                key={v.id || i}
+                                className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"
+                              >
+                                <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-0.5">
+                                  <span className="font-bold uppercase text-emerald-500">{v.sender}</span>
+                                  <span>{v.timestamp}</span>
+                                </div>
+                                <p className="text-slate-700 dark:text-slate-300 leading-relaxed line-clamp-3">
+                                  {v.text}
+                                </p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Student Notification Inbox */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 text-sm">
+                          <Bell className="w-4 h-4 text-amber-500" />
+                          <span>Student Notifications Inbox ({details.notifications.length})</span>
+                        </h4>
+                        {details.notifications.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleClearDataSlice("notifications", "student notifications")}
+                            className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                          >
+                            Clear Inbox
+                          </button>
+                        )}
+                      </div>
+                      {details.notifications.length === 0 ? (
+                        <p className="text-slate-400">Inbox is currently empty.</p>
+                      ) : (
+                        <div className="space-y-2 max-h-44 overflow-y-auto">
+                          {details.notifications.map((n: any, i: number) => (
+                            <div
+                              key={n.id || i}
+                              className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <p className="font-semibold text-slate-900 dark:text-white">{n.title}</p>
+                                <p className="text-[11px] text-slate-600 dark:text-slate-300">{n.message}</p>
+                              </div>
+                              <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                                {n.read ? "Read" : "Unread"} · {n.timestamp}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 8: XP, STREAK, BADGES, GAME HISTORY & RAW JSON INSPECTOR */}
+                {inspectTab === "gaming" && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center font-mono tabular-nums">
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-xl font-bold text-indigo-600 dark:text-indigo-400">
+                          Lvl {details.gameProfile?.level || liveInspectUser.gameLevel}
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-500 mt-0.5">Academic Rank</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
+                          {(details.gameProfile?.xp ?? liveInspectUser.gameXp).toLocaleString()}
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-500 mt-0.5">Total XP</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-xl font-bold text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1">
+                          <Flame className="w-4 h-4" />
+                          {details.studyStreak || 0}d
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-500 mt-0.5">Study Streak</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <p className="text-xl font-bold text-purple-600 dark:text-purple-400">
+                          {details.gameProfile?.totalGamesPlayed || 0} / {details.gameProfile?.highestStreak || 0}
+                        </p>
+                        <p className="text-[11px] font-sans text-slate-500 mt-0.5">Games / Best Streak</p>
+                      </div>
+                    </div>
+
+                    {/* Quick Grant XP */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs">
+                      <p className="font-bold text-slate-900 dark:text-white">Quick XP Bonus / Adjustment</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {[50, 100, 250, 500].map((amt) => (
+                          <button
+                            key={amt}
+                            type="button"
+                            onClick={() => handleGrantXp(amt)}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-mono font-bold cursor-pointer"
+                          >
+                            +{amt} XP
+                          </button>
                         ))}
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          <input
+                            type="number"
+                            value={customXpAmount}
+                            onChange={(e) => setCustomXpAmount(Number(e.target.value))}
+                            className="w-24 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono tabular-nums"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleGrantXp(customXpAmount)}
+                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold cursor-pointer"
+                          >
+                            Apply XP
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Exact Streak, Level, XP & Rank Editor */}
+                    <form
+                      onSubmit={handleSaveStudyStats}
+                      className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs"
+                    >
+                      <p className="font-bold text-slate-900 dark:text-white">Direct Gamification & Streak Override</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-500 mb-1">Exact XP</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={editXpValue}
+                            onChange={(e) => setEditXpValue(Number(e.target.value))}
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-500 mb-1">Level</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={editLevelValue}
+                            onChange={(e) => setEditLevelValue(Number(e.target.value))}
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-500 mb-1">Study Streak (Days)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={editStreakValue}
+                            onChange={(e) => setEditStreakValue(Number(e.target.value))}
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-500 mb-1">Rank Title</label>
+                          <input
+                            type="text"
+                            value={editRankTitle}
+                            onChange={(e) => setEditRankTitle(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          disabled={isSavingStudyStats}
+                          className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold cursor-pointer"
+                        >
+                          {isSavingStudyStats ? "Saving..." : "Save Stats & Streak"}
+                        </button>
+                      </div>
+                    </form>
+
+                    {/* Recent Games & Badges */}
+                    {Array.isArray(details.gameProfile?.history) && details.gameProfile.history.length > 0 && (
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2 text-xs">
+                        <p className="font-bold text-slate-900 dark:text-white">
+                          Recent Educational Game Rounds ({details.gameProfile.history.length})
+                        </p>
+                        <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                          {details.gameProfile.history.slice(0, 15).map((g: any, idx: number) => (
+                            <div
+                              key={g.id || idx}
+                              className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between font-mono text-[11px]"
+                            >
+                              <span className="font-sans font-semibold text-slate-800 dark:text-slate-200 truncate">
+                                {g.gameTitle} ({g.difficulty})
+                              </span>
+                              <span className="text-emerald-600 dark:text-emerald-400">
+                                {g.percentage}% · +{g.xpEarned} XP
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
+
+                    {/* Complete Raw JSON Dossier Inspector */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2">
+                          <Code2 className="w-4 h-4 text-sky-500" />
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            Complete Raw User Data Inspector (JSON)
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(JSON.stringify(rawDossierPayload, null, 2), "raw-json-copy")}
+                            className="px-3 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 font-semibold cursor-pointer flex items-center gap-1"
+                          >
+                            {copiedKey === "raw-json-copy" ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-500" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                            <span>Copy All JSON</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowRawJson(!showRawJson)}
+                            className="px-3 py-1 rounded-lg bg-indigo-600 text-white font-semibold cursor-pointer"
+                          >
+                            {showRawJson ? "Hide JSON" : "View Full JSON"}
+                          </button>
+                        </div>
+                      </div>
+                      {showRawJson && (
+                        <pre className="p-3 rounded-xl bg-slate-950 text-emerald-300 text-[11px] font-mono overflow-x-auto max-h-72 border border-slate-800">
+                          {JSON.stringify(rawDossierPayload, null, 2)}
+                        </pre>
+                      )}
+                    </div>
                   </div>
+                )}
+              </div>
+
+              <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 flex items-center justify-between gap-2 flex-wrap shrink-0">
+                <span className="text-[11px] text-slate-400 font-mono">
+                  User ID: {liveInspectUser.id}
+                  {inspectLastSyncedAt ? ` · Live server sync: ${inspectLastSyncedAt}` : ""}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportUserDossierJson}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  >
+                    Download JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInspectUser(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold text-xs hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer"
+                  >
+                    Close
+                  </button>
                 </div>
-              )}
-
-              {/* TAB 6: Gaming & XP */}
-              {inspectTab === "gaming" && (
-                <div className="space-y-5 animate-fadeIn">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      Gamification Profile & Assessment History
-                    </h4>
-                    <p className="text-xs text-slate-500">
-                      XP milestones and quiz history for {inspectUser.name}
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-                    <div className="p-4 rounded-2xl bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800">
-                      <p className="text-2xl font-black text-indigo-600 dark:text-indigo-400">
-                        Level {getStudentFullDetails(inspectUser.id).gameProfile?.level || inspectUser.gameLevel}
-                      </p>
-                      <p className="text-[11px] font-bold text-slate-500">Academic Rank</p>
-                    </div>
-
-                    <div className="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
-                      <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
-                        {getStudentFullDetails(inspectUser.id).gameProfile?.xp || inspectUser.gameXp}
-                      </p>
-                      <p className="text-[11px] font-bold text-slate-500">Total XP</p>
-                    </div>
-
-                    <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800">
-                      <p className="text-2xl font-black text-amber-600 dark:text-amber-400">
-                        {getStudentFullDetails(inspectUser.id).studyStreak || 0} Days
-                      </p>
-                      <p className="text-[11px] font-bold text-slate-500">Daily Study Streak</p>
-                    </div>
-
-                    <div className="p-4 rounded-2xl bg-purple-50/60 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800">
-                      <p className="text-2xl font-black text-purple-600 dark:text-purple-400">
-                        {inspectUser.quizzesCompleted}
-                      </p>
-                      <p className="text-[11px] font-bold text-slate-500">Quizzes Taken</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Footer with Close Button */}
-            <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 flex items-center justify-between shrink-0">
-              <span className="text-[11px] text-slate-400 font-mono">
-                Isolated Profile ID: {inspectUser.id}
-              </span>
-              <button
-                onClick={() => setInspectUser(null)}
-                className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold text-xs hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer"
-              >
-                Close Inspector
-              </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
-      {/* ======================================================== */}
-      {/* MODAL 2: Create New Student User Account                 */}
-      {/* ======================================================== */}
+      {/* =================================================================== */}
+      {/* MODAL 2: Create New Student User Account                            */}
+      {/* =================================================================== */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg shadow-2xl p-6 space-y-5">
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-5">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2.5">
-                <div className="p-2.5 rounded-2xl bg-indigo-600 text-white shadow-sm">
+                <div className="p-2 rounded-xl bg-indigo-600 text-white">
                   <UserPlus className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                    Register New Student Account
-                  </h3>
-                  <p className="text-xs text-slate-500">Creates an isolated profile with credentials</p>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">Register New Student</h3>
+                  <p className="text-xs text-slate-500">Creates an isolated student account on server</p>
                 </div>
               </div>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {createError && (
-              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-300 text-xs font-semibold">
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-300 text-xs font-semibold">
                 {createError}
               </div>
             )}
 
             <form onSubmit={handleCreateUser} className="space-y-3.5 text-xs">
               <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Full Student Name *
                 </label>
                 <input
@@ -1616,8 +4734,8 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Student Email / Username *
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Email / Username *
                   </label>
                   <input
                     type="text"
@@ -1629,7 +4747,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Account Password *
                   </label>
                   <input
@@ -1645,7 +4763,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Class / Grade Level
                   </label>
                   <select
@@ -1661,7 +4779,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                   </select>
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     School / College
                   </label>
                   <input
@@ -1675,14 +4793,13 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Target Board Exam
                 </label>
                 <input
                   type="text"
                   value={newUserTargetExam}
                   onChange={(e) => setNewUserTargetExam(e.target.value)}
-                  placeholder="e.g. BISE Malakand Board Exam 2026"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -1691,16 +4808,16 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-200 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-200 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingCreate}
-                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold shadow-md shadow-indigo-600/30 transition-all cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold cursor-pointer"
                 >
-                  {isSubmittingCreate ? "Creating..." : "Save Account"}
+                  {isSubmittingCreate ? "Creating..." : "Create Account"}
                 </button>
               </div>
             </form>
@@ -1708,41 +4825,41 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* MODAL 3: Edit Student User Account                      */}
-      {/* ======================================================== */}
+      {/* =================================================================== */}
+      {/* MODAL 3: Edit Student User Account                                  */}
+      {/* =================================================================== */}
       {editUser && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg shadow-2xl p-6 space-y-5">
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-5">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2.5">
-                <div className="p-2.5 rounded-2xl bg-amber-500 text-slate-950 shadow-sm">
+                <div className="p-2 rounded-xl bg-amber-500 text-slate-950">
                   <Edit3 className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                    Edit Student Profile: {editUser.name}
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Edit Profile: {editUser.name}
                   </h3>
-                  <p className="text-xs text-slate-500">Modify credentials, password, and curriculum target</p>
+                  <p className="text-xs text-slate-500">Modify credentials and grade assignment</p>
                 </div>
               </div>
               <button
                 onClick={() => setEditUser(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {editError && (
-              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-300 text-xs font-semibold">
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-300 text-xs font-semibold">
                 {editError}
               </div>
             )}
 
             <form onSubmit={handleSaveEdit} className="space-y-3.5 text-xs">
               <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Full Student Name
                 </label>
                 <input
@@ -1756,8 +4873,8 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Login Email / Username
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Email / Username
                   </label>
                   <input
                     type="text"
@@ -1768,9 +4885,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Password (Editable)
-                  </label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Password</label>
                   <input
                     type="text"
                     required
@@ -1783,9 +4898,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Class / Grade Level
-                  </label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Class / Grade</label>
                   <select
                     value={editGrade}
                     onChange={(e) => setEditGrade(e.target.value as StudentGrade)}
@@ -1799,7 +4912,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                   </select>
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     School / College
                   </label>
                   <input
@@ -1812,7 +4925,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Target Board Exam
                 </label>
                 <input
@@ -1827,16 +4940,16 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                 <button
                   type="button"
                   onClick={() => setEditUser(null)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-200 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-200 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingEdit}
-                  className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-md shadow-amber-500/30 transition-all cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold cursor-pointer"
                 >
-                  {isSubmittingEdit ? "Saving..." : "Update Credentials"}
+                  {isSubmittingEdit ? "Saving..." : "Update Account"}
                 </button>
               </div>
             </form>
@@ -1844,36 +4957,169 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* MODAL 4: Delete Account Confirmation                     */}
-      {/* ======================================================== */}
+      {/* =================================================================== */}
+      {/* MODAL 4: Delete Account Confirmation                                */}
+      {/* =================================================================== */}
       {deleteConfirmUser && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
-            <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950 text-rose-600 flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-6 h-6" />
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-4">
+            <div className="w-11 h-11 rounded-xl bg-rose-50 dark:bg-rose-950 text-rose-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-5 h-5" />
             </div>
             <div className="text-center space-y-1">
-              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
                 Delete Account: {deleteConfirmUser.name}?
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                This will permanently delete this student's account and erase all their isolated tasks, downloaded notes,
-                and quiz history. This action cannot be undone.
+                This permanently deletes the account and erases all isolated tasks, notes, and quiz history on the server.
               </p>
             </div>
             <div className="flex items-center gap-2 pt-2">
               <button
                 onClick={() => setDeleteConfirmUser(null)}
-                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs hover:bg-slate-200 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handleDeleteUser}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs shadow-md shadow-rose-600/30 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs cursor-pointer"
               >
                 Delete Account
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* MODAL 5: Reset Student Data Confirmation (Replaces window.confirm)  */}
+      {/* =================================================================== */}
+      {confirmResetUser && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-4">
+            <div className="w-11 h-11 rounded-xl bg-amber-50 dark:bg-amber-950 text-amber-600 flex items-center justify-center mx-auto">
+              <RotateCcw className="w-5 h-5" />
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Reset Study Data for {confirmResetUser.name}?
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                All tasks, files, calendar events, XP, and downloaded note records will be cleared. Login credentials remain intact.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                onClick={() => setConfirmResetUser(null)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmResetStudentData}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs cursor-pointer"
+              >
+                Confirm Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* MODAL 6: Clear Log Stream Confirmation                              */}
+      {/* =================================================================== */}
+      {confirmClearStream && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-4">
+            <div className="w-11 h-11 rounded-xl bg-rose-50 dark:bg-rose-950 text-rose-600 flex items-center justify-center mx-auto">
+              <ScrollText className="w-5 h-5" />
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Clear {confirmClearStream.toUpperCase()} Logs?
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                All existing entries in the {confirmClearStream} log stream will be permanently removed from the server.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                onClick={() => setConfirmClearStream(null)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleClearSelectedLogStream}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs cursor-pointer"
+              >
+                Clear Logs
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* MODAL 7: Gmail Send Confirmation Dialog (Mandatory Safety Gate)     */}
+      {/* =================================================================== */}
+      {confirmSendEmailOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400">
+                <Mail className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">Confirm Gmail Dispatch</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Review recipient and message details before sending via your connected Gmail account
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2 text-xs">
+              <div>
+                <span className="text-slate-400 font-semibold">From: </span>
+                <span className="font-mono text-slate-800 dark:text-slate-200">
+                  {gmailProfile?.emailAddress || gmailAuthEmail || "Connected Google Account"}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-semibold">To: </span>
+                <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{emailTo}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-semibold">Subject: </span>
+                <span className="font-bold text-slate-900 dark:text-white">{emailSubject}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+                <p className="text-slate-400 font-semibold mb-1">Message Preview:</p>
+                <pre className="whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-300 max-h-40 overflow-y-auto">
+                  {emailBody}
+                </pre>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmSendEmailOpen(false)}
+                disabled={isSendingEmail}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAndSendEmail}
+                disabled={isSendingEmail}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs cursor-pointer disabled:opacity-50"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isSendingEmail ? "Sending..." : "Confirm & Send Email"}</span>
               </button>
             </div>
           </div>

@@ -47,7 +47,7 @@ import {
   ExtendedLectureVideo,
 } from "../services/curriculumLecturesEngine";
 import { useAuth } from "../context/AuthContext";
-import { getUserItem, setUserItem } from "../utils/userStorage";
+import { getUserItem, setUserItem, persistUserKeyToServer, logUserActivityToServer } from "../utils/userStorage";
 
 interface SubjectOption {
   id: string;
@@ -224,16 +224,40 @@ export const LecturesModeView: React.FC = () => {
 
   const toggleSaveLecture = (id: string) => {
     setSavedLectureIds((prev) => {
-      const next = prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
+      const added = !prev.includes(id);
+      const next = added ? [...prev, id] : prev.filter((item) => item !== id);
       setUserItem(currentUser?.id, "saved_lectures", next);
+      persistUserKeyToServer(currentUser?.id, "saved_lectures", next);
+      if (currentUser?.id) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "lectures",
+          action: added ? "LECTURE_BOOKMARKED" : "LECTURE_UNBOOKMARKED",
+          details: `${added ? "Saved" : "Removed"} lecture bookmark (${id})`,
+        });
+      }
       return next;
     });
   };
 
   const toggleWatchLecture = (id: string) => {
     setWatchedLectureIds((prev) => {
-      const next = prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
+      const added = !prev.includes(id);
+      const next = added ? [...prev, id] : prev.filter((item) => item !== id);
       setUserItem(currentUser?.id, "watched_lectures", next);
+      persistUserKeyToServer(currentUser?.id, "watched_lectures", next);
+      if (currentUser?.id && added) {
+        logUserActivityToServer({
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          feature: "lectures",
+          action: "LECTURE_WATCHED",
+          details: `Marked lecture as watched (${id})`,
+        });
+      }
       return next;
     });
   };

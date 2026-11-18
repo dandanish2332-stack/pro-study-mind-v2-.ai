@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import { StudentUser, StudentGrade, AdminUserProgressDetails, StudentIsolatedData } from "../types";
-import { getUserItem, removeUserItem, setUserItem } from "../utils/userStorage";
+import { getUserItem, removeUserItem, setUserItem, logUserActivityToServer } from "../utils/userStorage";
+import { googleLogout } from "../utils/googleAuth";
 
 export interface StoredAccount extends StudentUser {
   passwordHash: string;
@@ -13,9 +14,14 @@ export interface AuthContextType {
   isLoading: boolean;
   isAdmin: boolean;
   isImpersonating: boolean;
+  dataVersion: number;
   login: (
     emailOrUsername: string,
     password: string,
+    rememberMe?: boolean
+  ) => Promise<{ success: boolean; error?: string }>;
+  loginWithGoogle: (
+    profile: { email: string; name: string; avatarUrl?: string; uid?: string },
     rememberMe?: boolean
   ) => Promise<{ success: boolean; error?: string }>;
   signup: (
@@ -49,16 +55,71 @@ export interface AuthContextType {
     favoriteSubject?: string;
     dailyGoalHours?: number;
   }) => Promise<{ success: boolean; error?: string }>;
-  addStudentTaskByAdmin: (userId: string, task: any) => void;
-  deleteStudentTaskByAdmin: (userId: string, taskId: string) => void;
-  resetStudentIsolatedDataByAdmin: (userId: string) => void;
+  addStudentTaskByAdmin: (
+    userId: string,
+    task: any
+  ) => Promise<{ success: boolean; error?: string }>;
+  toggleStudentTaskByAdmin: (
+    userId: string,
+    taskId: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  deleteStudentTaskByAdmin: (
+    userId: string,
+    taskId: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  resetStudentIsolatedDataByAdmin: (
+    userId: string
+  ) => Promise<{ success: boolean; error?: string }>;
   impersonateStudent: (studentId: string) => void;
   exitImpersonation: () => void;
-  refreshAdminUsersList: () => void;
+  refreshAdminUsersList: (forceServerAuthoritative?: boolean) => Promise<void>;
   loginAsAdminMaster: () => Promise<{ success: boolean; error?: string }>;
-  grantStudentXpByAdmin: (userId: string, xpAmount: number) => void;
-  addStudentCalendarEventByAdmin: (userId: string, event: any) => void;
-  broadcastAnnouncementByAdmin: (title: string, message: string, type?: string) => void;
+  grantStudentXpByAdmin: (
+    userId: string,
+    xpAmount: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  addStudentCalendarEventByAdmin: (
+    userId: string,
+    event: any
+  ) => Promise<{ success: boolean; error?: string }>;
+  deleteStudentCalendarEventByAdmin: (
+    userId: string,
+    eventId: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  broadcastAnnouncementByAdmin: (
+    title: string,
+    message: string,
+    type?: string,
+    targetGrade?: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  fetchStudentLiveDetailsByAdmin: (userId: string) => Promise<{
+    success: boolean;
+    details?: StudentIsolatedData;
+    error?: string;
+  }>;
+  sendDirectNotificationByAdmin: (
+    userId: string,
+    payload: { title: string; message: string; type?: string }
+  ) => Promise<{ success: boolean; error?: string }>;
+  deleteStudentFileByAdmin: (
+    userId: string,
+    fileId: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  deleteStudentPdfByAdmin: (
+    userId: string,
+    pdfId: string,
+    kind: "downloaded" | "custom"
+  ) => Promise<{ success: boolean; error?: string }>;
+  updateStudentStudyStatsByAdmin: (
+    userId: string,
+    payload: {
+      studyStreak?: number;
+      xp?: number;
+      level?: number;
+      title?: string;
+      clearKey?: string;
+    }
+  ) => Promise<{ success: boolean; error?: string }>;
 }
 
 const AUTH_SESSION_KEY = "prostudymind_auth_session";
@@ -343,8 +404,8 @@ function seedIsolatedStudentData(userId: string) {
         "pdf-math-12-01",
       ]);
     }
-    if (getUserItem(userId, "game_profile", null) === null) {
-      setUserItem(userId, "game_profile", {
+    if (getUserItem(userId, "games_profile", null) === null && getUserItem(userId, "game_profile", null) === null) {
+      const adminGameProfile = {
         level: 99,
         xp: 99999,
         xpToNextLevel: 100000,
@@ -359,7 +420,10 @@ function seedIsolatedStudentData(userId: string) {
           { id: "b-3", title: "KaTeX Virtuoso", description: "Formulated advanced math and science equations", category: "Math", icon: "⚛️", unlocked: true },
           { id: "b-4", title: "Multi-User Guardian", description: "Ensured 100% multi-user isolation security", category: "Security", icon: "🛡️", unlocked: true },
         ],
-      });
+        history: [],
+      };
+      setUserItem(userId, "game_profile", adminGameProfile);
+      setUserItem(userId, "games_profile", adminGameProfile);
     }
     if (getUserItem(userId, "study_streak", null) === null) {
       setUserItem(userId, "study_streak", 365);
@@ -391,8 +455,10 @@ function seedIsolatedStudentData(userId: string) {
     if (getUserItem(userId, "downloaded_pdf_ids", null) === null) {
       setUserItem(userId, "downloaded_pdf_ids", ["pdf-phys-11-01", "pdf-phys-11-02", "pdf-phys-11-03", "pdf-phys-11-04"]);
     }
-    if (getUserItem(userId, "game_profile", null) === null) {
-      setUserItem(userId, "game_profile", { level: 3, xp: 580, title: "Physics Apprentice", totalGamesPlayed: 14, totalCorrect: 42, highestStreak: 8, soundEnabled: true, badges: [] });
+    if (getUserItem(userId, "games_profile", null) === null && getUserItem(userId, "game_profile", null) === null) {
+      const hamzaGp = { level: 3, xp: 580, xpToNextLevel: 900, title: "Physics Apprentice", totalGamesPlayed: 14, totalCorrect: 42, highestStreak: 8, soundEnabled: true, badges: [], history: [] };
+      setUserItem(userId, "game_profile", hamzaGp);
+      setUserItem(userId, "games_profile", hamzaGp);
     }
     if (getUserItem(userId, "study_streak", null) === null) {
       setUserItem(userId, "study_streak", 5);
@@ -426,8 +492,10 @@ function seedIsolatedStudentData(userId: string) {
     if (getUserItem(userId, "downloaded_pdf_ids", null) === null) {
       setUserItem(userId, "downloaded_pdf_ids", ["pdf-bio-11-01", "pdf-bio-11-02", "pdf-bio-11-03", "pdf-bio-12-01", "pdf-bio-12-02", "pdf-bio-12-03", "pdf-chem-12-01"]);
     }
-    if (getUserItem(userId, "game_profile", null) === null) {
-      setUserItem(userId, "game_profile", { level: 5, xp: 1240, title: "Biology Scholar", totalGamesPlayed: 28, totalCorrect: 86, highestStreak: 15, soundEnabled: true, badges: [] });
+    if (getUserItem(userId, "games_profile", null) === null && getUserItem(userId, "game_profile", null) === null) {
+      const ayeshaGp = { level: 5, xp: 1240, xpToNextLevel: 1500, title: "Biology Scholar", totalGamesPlayed: 28, totalCorrect: 86, highestStreak: 15, soundEnabled: true, badges: [], history: [] };
+      setUserItem(userId, "game_profile", ayeshaGp);
+      setUserItem(userId, "games_profile", ayeshaGp);
     }
     if (getUserItem(userId, "study_streak", null) === null) {
       setUserItem(userId, "study_streak", 9);
@@ -445,8 +513,10 @@ function seedIsolatedStudentData(userId: string) {
     if (getUserItem(userId, "downloaded_pdf_ids", null) === null) {
       setUserItem(userId, "downloaded_pdf_ids", ["pdf-chem-11-01", "pdf-chem-11-02", "pdf-chem-12-01", "pdf-chem-12-02", "pdf-phys-12-01"]);
     }
-    if (getUserItem(userId, "game_profile", null) === null) {
-      setUserItem(userId, "game_profile", { level: 6, xp: 1850, title: "MDCAT Chemistry Prodigy", totalGamesPlayed: 35, totalCorrect: 110, highestStreak: 18, soundEnabled: true, badges: [] });
+    if (getUserItem(userId, "games_profile", null) === null && getUserItem(userId, "game_profile", null) === null) {
+      const usmanGp = { level: 6, xp: 1850, xpToNextLevel: 1800, title: "MDCAT Chemistry Prodigy", totalGamesPlayed: 35, totalCorrect: 110, highestStreak: 18, soundEnabled: true, badges: [], history: [] };
+      setUserItem(userId, "game_profile", usmanGp);
+      setUserItem(userId, "games_profile", usmanGp);
     }
     if (getUserItem(userId, "study_streak", null) === null) {
       setUserItem(userId, "study_streak", 14);
@@ -454,27 +524,98 @@ function seedIsolatedStudentData(userId: string) {
   }
 }
 
+function resolveUnifiedGameProfile(userId: string) {
+  const plural = getUserItem<any>(userId, "games_profile", null);
+  const singular = getUserItem<any>(userId, "game_profile", null);
+  if (!plural && !singular) {
+    return {
+      level: 1,
+      xp: 0,
+      xpToNextLevel: 300,
+      title: "Novice Scholar",
+      totalGamesPlayed: 0,
+      totalCorrect: 0,
+      highestStreak: 0,
+      soundEnabled: true,
+      badges: [],
+      history: [],
+    };
+  }
+  if (!plural) return singular;
+  if (!singular) return plural;
+  const pScore = Number(plural.xp || 0) + Number(plural.totalGamesPlayed || 0) * 10;
+  const sScore = Number(singular.xp || 0) + Number(singular.totalGamesPlayed || 0) * 10;
+  const best = pScore >= sScore ? plural : singular;
+  const other = best === plural ? singular : plural;
+  return {
+    ...other,
+    ...best,
+    badges: Array.isArray(best.badges) && best.badges.length > 0 ? best.badges : other.badges || [],
+    history: Array.isArray(best.history) && best.history.length > 0 ? best.history : other.history || [],
+  };
+}
+
 function extractLocalUserState(userId: string) {
+  const unifiedGp = resolveUnifiedGameProfile(userId);
   return {
     tasks: getUserItem(userId, "tasks", []),
     files: getUserItem(userId, "files", []),
     calendar: getUserItem(userId, "calendar", []),
     downloaded_pdf_ids: getUserItem(userId, "downloaded_pdf_ids", []),
-    game_profile: getUserItem(userId, "game_profile", null),
+    custom_pdfs: getUserItem(userId, "custom_pdfs", []),
+    saved_lectures: getUserItem(userId, "saved_lectures", []),
+    watched_lectures: getUserItem(userId, "watched_lectures", []),
+    dict_bookmarks: getUserItem(userId, "dict_bookmarks", []),
+    dict_recents: getUserItem(userId, "dict_recents", []),
+    dict_custom_words: getUserItem(userId, "dict_custom_words", []),
+    games_profile: unifiedGp,
+    game_profile: unifiedGp,
     study_streak: getUserItem(userId, "study_streak", 0),
     quiz_history: getUserItem(userId, "quiz_history", []),
+    notifications: getUserItem(userId, "notifications", []),
+    voice_history: getUserItem(userId, "voice_history", []),
+    chat_history: getUserItem(userId, "chat_history", []),
   };
 }
 
-function applyServerUserState(userId: string, state: any) {
+function applyServerUserState(userId: string, state: any, allowEmptyOverwrite = false) {
   if (!state || typeof state !== "object") return;
+  const keys = Object.keys(state);
+  if (keys.length === 0) return;
+
+  if (!allowEmptyOverwrite && !state.lastUpdated) {
+    const serverHasData =
+      (Array.isArray(state.tasks) && state.tasks.length > 0) ||
+      (Array.isArray(state.files) && state.files.length > 0) ||
+      (Array.isArray(state.calendar) && state.calendar.length > 0) ||
+      (Array.isArray(state.quiz_history) && state.quiz_history.length > 0) ||
+      Number(state.games_profile?.xp || state.game_profile?.xp || 0) > 0;
+    const localHasData =
+      getUserItem<any[]>(userId, "tasks", []).length > 0 ||
+      getUserItem<any[]>(userId, "files", []).length > 0;
+    if (!serverHasData && localHasData) return;
+  }
+
   if (state.tasks !== undefined) setUserItem(userId, "tasks", state.tasks);
   if (state.files !== undefined) setUserItem(userId, "files", state.files);
   if (state.calendar !== undefined) setUserItem(userId, "calendar", state.calendar);
   if (state.downloaded_pdf_ids !== undefined) setUserItem(userId, "downloaded_pdf_ids", state.downloaded_pdf_ids);
-  if (state.game_profile !== undefined) setUserItem(userId, "game_profile", state.game_profile);
+  if (state.custom_pdfs !== undefined) setUserItem(userId, "custom_pdfs", state.custom_pdfs);
+  if (state.saved_lectures !== undefined) setUserItem(userId, "saved_lectures", state.saved_lectures);
+  if (state.watched_lectures !== undefined) setUserItem(userId, "watched_lectures", state.watched_lectures);
+  if (state.dict_bookmarks !== undefined) setUserItem(userId, "dict_bookmarks", state.dict_bookmarks);
+  if (state.dict_recents !== undefined) setUserItem(userId, "dict_recents", state.dict_recents);
+  if (state.dict_custom_words !== undefined) setUserItem(userId, "dict_custom_words", state.dict_custom_words);
+  const gp = state.games_profile || state.game_profile;
+  if (gp !== undefined) {
+    setUserItem(userId, "game_profile", gp);
+    setUserItem(userId, "games_profile", gp);
+  }
   if (state.study_streak !== undefined) setUserItem(userId, "study_streak", state.study_streak);
   if (state.quiz_history !== undefined) setUserItem(userId, "quiz_history", state.quiz_history);
+  if (state.notifications !== undefined) setUserItem(userId, "notifications", state.notifications);
+  if (state.voice_history !== undefined) setUserItem(userId, "voice_history", state.voice_history);
+  if (state.chat_history !== undefined) setUserItem(userId, "chat_history", state.chat_history);
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -483,7 +624,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<StudentUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isImpersonating, setIsImpersonating] = useState<boolean>(false);
-  const [, setTick] = useState<number>(0);
+  const [tick, setTick] = useState<number>(0);
   const currentUserRef = useRef<StudentUser | null>(null);
   currentUserRef.current = currentUser;
   const hasInitializedRef = useRef<boolean>(false);
@@ -517,19 +658,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             u.email.toLowerCase() === ADMIN_MASTER_ID ||
             u.email.toLowerCase() === ADMIN_PRIMARY_EMAIL.toLowerCase()
         );
-        if (adminIdx !== -1) {
+        if (adminIdx !== -1 && (!parsed[adminIdx].isAdmin || parsed[adminIdx].role !== "admin")) {
           parsed[adminIdx] = {
             ...parsed[adminIdx],
-            name: "Danish (Master Administrator)",
-            email: ADMIN_PRIMARY_EMAIL,
-            grade: "All Levels (Master Admin)",
-            targetExam: "PRO Study Mind Command Headquarters",
-            schoolOrCollege: "SPS College Batkhela Campus (Mekhband)",
-            favoriteSubject: "Full Platform Control & Advanced Computer Science",
-            dailyGoalHours: 12,
             role: "admin",
             isAdmin: true,
-            bio: "Founder, Creator & Master Administrator of PRO Study Mind v2.0. Managing academic excellence, multi-user isolation, and comprehensive exam preparations for students across Pakistan.",
           };
           localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(parsed));
         }
@@ -544,9 +677,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  // Bidirectional Synchronization with Server
-  const syncWithServer = useCallback(async (explicitUserId?: string) => {
+  const notifyUserStateUpdated = useCallback((userId: string) => {
     try {
+      window.dispatchEvent(new CustomEvent("prostudymind:user-state-updated", { detail: { userId } }));
+    } catch {}
+  }, []);
+
+  // Bidirectional Synchronization with Server
+  const syncWithServer = useCallback(async (explicitUserId?: string, forceServerAuthoritative = false) => {
+    try {
+      if (forceServerAuthoritative) {
+        const res = await fetch("/api/users/all");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && Array.isArray(data.users)) {
+            localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.users));
+            if (data.states && typeof data.states === "object") {
+              for (const [uid, uState] of Object.entries<any>(data.states)) {
+                applyServerUserState(uid, uState);
+                notifyUserStateUpdated(uid);
+              }
+            }
+            setTick((prev) => prev + 1);
+          }
+        }
+        return;
+      }
+
       const localUsers = getRegisteredUsers();
       const activeUserId = explicitUserId ?? currentUserRef.current?.id;
       let userStatePayload: any = undefined;
@@ -569,10 +726,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.users)) {
-          // Merge server users with local users
+          const deletedSet = new Set<string>(
+            Array.isArray(data.deletedUserIds) ? data.deletedUserIds : []
+          );
           const mergedMap = new Map<string, StoredAccount>();
-          localUsers.forEach((u) => mergedMap.set(u.id, u));
+          localUsers.forEach((u) => {
+            if (!deletedSet.has(u.id)) {
+              mergedMap.set(u.id, u);
+            }
+          });
           data.users.forEach((su: StoredAccount) => {
+            if (deletedSet.has(su.id)) return;
             const existing = mergedMap.get(su.id);
             if (!existing || (su.lastActiveTimestamp || 0) >= (existing.lastActiveTimestamp || 0)) {
               mergedMap.set(su.id, { ...existing, ...su });
@@ -581,19 +745,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const mergedList = Array.from(mergedMap.values());
           localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(mergedList));
 
-          // Merge user states from server
           if (data.userStates && typeof data.userStates === "object") {
             for (const [uid, uState] of Object.entries<any>(data.userStates)) {
-              applyServerUserState(uid, uState);
+              if (!deletedSet.has(uid)) {
+                applyServerUserState(uid, uState);
+              }
+            }
+            if (activeUserId && data.userStates[activeUserId]) {
+              notifyUserStateUpdated(activeUserId);
             }
           }
           setTick((prev) => prev + 1);
         }
       }
-    } catch (e) {
+    } catch {
       // Quiet fail on network interruption
     }
-  }, [getRegisteredUsers]);
+  }, [getRegisteredUsers, notifyUserStateUpdated]);
 
   // Initialize and load active session + trigger initial server sync
   useEffect(() => {
@@ -702,10 +870,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: "Please enter your account password." };
     }
 
-    // 1. Direct Secret Master Admin Authentication
+    const usersForAdminMatch = getRegisteredUsers();
+    const existingAdmin = usersForAdminMatch.find(
+      (u) =>
+        u.id === ADMIN_MASTER_ID ||
+        u.email.toLowerCase() === ADMIN_MASTER_ID ||
+        u.email.toLowerCase() === ADMIN_PRIMARY_EMAIL.toLowerCase()
+    );
+
     const isAdminIdentifier =
       trimmedInput === ADMIN_MASTER_ID ||
       trimmedInput === ADMIN_PRIMARY_EMAIL.toLowerCase() ||
+      (existingAdmin && trimmedInput === existingAdmin.email.toLowerCase()) ||
       trimmedInput === "danish" ||
       trimmedInput === "admin" ||
       trimmedInput === "admin0011@prostudymind.internal" ||
@@ -714,12 +890,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const isAuthorizedAdminPass =
       trimmedPassword === ADMIN_MASTER_PASS ||
+      (existingAdmin && trimmedPassword === existingAdmin.passwordHash) ||
       trimmedPassword === "admin" ||
       trimmedPassword === "admin123" ||
       trimmedPassword === "danish123";
 
     if (isAdminIdentifier && isAuthorizedAdminPass) {
-      const users = getRegisteredUsers();
+      const users = usersForAdminMatch;
       let adminAccount = users.find(
         (u) =>
           u.id === ADMIN_MASTER_ID ||
@@ -730,15 +907,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!adminAccount) {
         adminAccount = SEED_STUDENT_ACCOUNTS[0];
         users.unshift(adminAccount);
-      } else {
-        adminAccount.name = "Danish (Master Administrator)";
-        adminAccount.email = ADMIN_PRIMARY_EMAIL;
-        adminAccount.grade = "All Levels (Master Admin)";
-        adminAccount.targetExam = "PRO Study Mind Command Headquarters";
-        adminAccount.schoolOrCollege = "SPS College Batkhela Campus (Mekhband)";
-        adminAccount.favoriteSubject = "Full Platform Control & Advanced Computer Science";
-        adminAccount.dailyGoalHours = 12;
-        adminAccount.bio = "Founder, Creator & Master Administrator of PRO Study Mind v2.0. Managing academic excellence, multi-user isolation, and comprehensive exam preparations for students across Pakistan.";
       }
 
       adminAccount.lastLogin = new Date().toISOString();
@@ -779,6 +947,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       syncWithServer();
+      fetch("/api/users/login-audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: adminAccount.email, role: "admin", success: true }),
+      }).catch(() => {});
       return { success: true };
     }
 
@@ -865,8 +1038,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(sessionUser));
     }
 
-    // Trigger sync
+    // Trigger sync & login audit
     syncWithServer();
+    fetch("/api/users/login-audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: matched.email,
+        role: sessionUser.role,
+        success: true,
+      }),
+    }).catch(() => {});
 
     return { success: true };
   };
@@ -891,6 +1073,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     if (!trimmedPassword || trimmedPassword.length < 6) {
       return { success: false, error: "Password must be at least 6 characters long." };
+    }
+
+    // Respect server-side signup policy if disabled by Master Admin
+    try {
+      const policyRes = await fetch("/api/platform-settings");
+      if (policyRes.ok) {
+        const policyData = await policyRes.json();
+        if (policyData?.settings && policyData.settings.allowPublicSignup === false) {
+          return {
+            success: false,
+            error: "New public registrations are currently paused by the Administrator. Please contact support.",
+          };
+        }
+      }
+    } catch {
+      // Allow offline/fallback gracefully
     }
 
     const users = getRegisteredUsers();
@@ -957,12 +1155,90 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  const loginWithGoogle = async (
+    profile: { email: string; name: string; avatarUrl?: string; uid?: string },
+    rememberMe = true
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch("/api/users/google-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profile),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success || !data.user) {
+        return { success: false, error: data.error || "Could not complete Google authentication." };
+      }
+
+      const serverUser: StoredAccount = data.user;
+      if (Array.isArray(data.allUsers)) {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
+      } else {
+        const users = getRegisteredUsers();
+        const idx = users.findIndex((u) => u.id === serverUser.id);
+        if (idx !== -1) users[idx] = { ...users[idx], ...serverUser };
+        else users.push(serverUser);
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
+      }
+
+      if (data.state && typeof data.state === "object" && Object.keys(data.state).length > 0) {
+        applyServerUserState(serverUser.id, data.state);
+      } else {
+        seedIsolatedStudentData(serverUser.id);
+      }
+
+      const isAdminAccount =
+        serverUser.id === ADMIN_MASTER_ID ||
+        serverUser.email?.toLowerCase() === ADMIN_PRIMARY_EMAIL.toLowerCase() ||
+        serverUser.role === "admin" ||
+        serverUser.isAdmin === true;
+
+      const sessionUser: StudentUser = {
+        id: serverUser.id,
+        name: serverUser.name,
+        email: serverUser.email,
+        grade: serverUser.grade,
+        targetExam: serverUser.targetExam,
+        schoolOrCollege: serverUser.schoolOrCollege,
+        favoriteSubject: serverUser.favoriteSubject,
+        dailyGoalHours: serverUser.dailyGoalHours,
+        phone: serverUser.phone,
+        bio: serverUser.bio,
+        avatarColor: serverUser.avatarColor,
+        avatarUrl: serverUser.avatarUrl,
+        provider: "google",
+        joinedDate: serverUser.joinedDate,
+        lastLogin: serverUser.lastLogin,
+        isAdmin: isAdminAccount,
+        role: isAdminAccount ? "admin" : "student",
+      };
+
+      sessionStorage.removeItem(IMPERSONATION_KEY);
+      setIsImpersonating(false);
+      setCurrentUser(sessionUser);
+      if (rememberMe) {
+        localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(sessionUser));
+        sessionStorage.removeItem(AUTH_SESSION_KEY);
+      } else {
+        sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(sessionUser));
+        localStorage.removeItem(AUTH_SESSION_KEY);
+      }
+
+      setTick((prev) => prev + 1);
+      syncWithServer(sessionUser.id);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error during Google sign-in." };
+    }
+  };
+
   const logout = () => {
     setCurrentUser(null);
     setIsImpersonating(false);
     sessionStorage.removeItem(IMPERSONATION_KEY);
     localStorage.removeItem(AUTH_SESSION_KEY);
     sessionStorage.removeItem(AUTH_SESSION_KEY);
+    googleLogout().catch(() => {});
   };
 
   const updateProfile = async (
@@ -977,6 +1253,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: "User account record not found." };
     }
 
+    let nextPassword: string | undefined;
     // If password change was requested, verify old and apply new
     if (changePassword && (changePassword.currentPassword || changePassword.newPassword)) {
       if (!changePassword.currentPassword) {
@@ -988,7 +1265,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!changePassword.newPassword || changePassword.newPassword.trim().length < 6) {
         return { success: false, error: "New password must be at least 6 characters long." };
       }
-      users[userIdx].passwordHash = changePassword.newPassword.trim();
+      nextPassword = changePassword.newPassword.trim();
+      users[userIdx].passwordHash = nextPassword;
     }
 
     // If email is changing, verify it is unique among registered users
@@ -1025,8 +1303,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Update active session
     setCurrentUser(updatedUser);
-    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(updatedUser));
+    if (localStorage.getItem(AUTH_SESSION_KEY)) {
+      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(updatedUser));
+    } else if (sessionStorage.getItem(AUTH_SESSION_KEY)) {
+      sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(updatedUser));
+    } else {
+      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(updatedUser));
+    }
 
+    try {
+      await fetch("/api/users/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          updates: {
+            ...updates,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            ...(nextPassword ? { password: nextPassword } : {}),
+          },
+        }),
+      });
+    } catch {
+      // Quiet fallback; local state saved and will sync on next cycle
+    }
+
+    logUserActivityToServer({
+      userId: currentUser.id,
+      userEmail: updatedUser.email,
+      userName: updatedUser.name,
+      feature: "profile",
+      action: "PROFILE_UPDATED",
+      details: `Updated profile fields${nextPassword ? " & password" : ""}`,
+    });
+
+    setTick((prev) => prev + 1);
     return { success: true };
   };
 
@@ -1034,10 +1346,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // MASTER ADMINISTRATOR PRIVILEGED OPERATIONS
   // ==========================================
 
-  const refreshAdminUsersList = useCallback(() => {
-    syncWithServer();
-    setTick((prev) => prev + 1);
-  }, [syncWithServer]);
+  const refreshAdminUsersList = useCallback(
+    async (forceServerAuthoritative = false) => {
+      await syncWithServer(undefined, forceServerAuthoritative);
+      setTick((prev) => prev + 1);
+    },
+    [syncWithServer]
+  );
 
   const getStudentFullDetails = useCallback((userId: string): StudentIsolatedData => {
     return {
@@ -1045,8 +1360,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       files: getUserItem<any[]>(userId, "files", []),
       calendar: getUserItem<any[]>(userId, "calendar", []),
       downloadedPdfs: getUserItem<string[]>(userId, "downloaded_pdf_ids", []),
-      gameProfile: getUserItem<any>(userId, "game_profile", { level: 1, xp: 0, title: "Novice Scholar", totalGamesPlayed: 0, totalCorrect: 0, highestStreak: 0, badges: [] }),
+      customPdfs: getUserItem<any[]>(userId, "custom_pdfs", []),
+      savedLectures: getUserItem<string[]>(userId, "saved_lectures", []),
+      watchedLectures: getUserItem<string[]>(userId, "watched_lectures", []),
+      dictBookmarks: getUserItem<string[]>(userId, "dict_bookmarks", []),
+      dictRecents: getUserItem<string[]>(userId, "dict_recents", []),
+      dictCustomWords: getUserItem<any[]>(userId, "dict_custom_words", []),
+      gameProfile: resolveUnifiedGameProfile(userId),
       studyStreak: getUserItem<number>(userId, "study_streak", 0),
+      quizHistory: getUserItem<any[]>(userId, "quiz_history", []),
+      notifications: getUserItem<any[]>(userId, "notifications", []),
+      voiceHistory: getUserItem<any[]>(userId, "voice_history", []),
+      chatHistory: getUserItem<any[]>(userId, "chat_history", []),
     };
   }, []);
 
@@ -1055,12 +1380,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const now = Date.now();
 
     return users.map((u) => {
-      // Calculate realistic or isolated progress
-      const userTasks = getUserItem<any[]>(u.id, "tasks", []);
-      const completedTasks = userTasks.filter((t) => t.status === "completed" || t.completed);
-      const downloadedPdfs = getUserItem<string[]>(u.id, "downloaded_pdf_ids", []);
-      const gameProfile = getUserItem<any>(u.id, "game_profile", null);
-      const quizHistory = getUserItem<any[]>(u.id, "quiz_history", []);
+      const details = getStudentFullDetails(u.id);
+      const completedTasks = details.tasks.filter((t) => t.status === "completed" || t.completed);
 
       // Active vs Offline calculation
       const lastActive = u.lastActiveTimestamp || (u.lastLogin ? new Date(u.lastLogin).getTime() : 0);
@@ -1084,60 +1405,85 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      const isolatedData: StudentIsolatedData = {
-        tasks: userTasks,
-        files: getUserItem<any[]>(u.id, "files", []),
-        calendar: getUserItem<any[]>(u.id, "calendar", []),
-        downloadedPdfs,
-        gameProfile,
-        studyStreak: getUserItem<number>(u.id, "study_streak", 0),
-      };
-
       return {
         ...u,
         passwordText: u.passwordHash,
         isOnline,
         lastActiveFormatted,
-        tasksCount: userTasks.length || (u.id === "usr-hamza-101" ? 6 : u.id === "usr-ayesha-102" ? 8 : u.id === "usr-usman-105" ? 12 : 3),
-        completedTasksCount: completedTasks.length || (u.id === "usr-hamza-101" ? 4 : u.id === "usr-ayesha-102" ? 7 : u.id === "usr-usman-105" ? 10 : 1),
-        gameXp: gameProfile?.xp || (u.id === "usr-hamza-101" ? 450 : u.id === "usr-ayesha-102" ? 820 : u.id === "usr-usman-105" ? 1400 : 120),
-        gameLevel: gameProfile?.level || (u.id === "usr-hamza-101" ? 2 : u.id === "usr-ayesha-102" ? 4 : u.id === "usr-usman-105" ? 6 : 1),
-        downloadedPdfsCount: downloadedPdfs.length || (u.id === "usr-hamza-101" ? 5 : u.id === "usr-ayesha-102" ? 9 : u.id === "usr-usman-105" ? 14 : 2),
-        quizzesCompleted: quizHistory.length || (u.id === "usr-hamza-101" ? 7 : u.id === "usr-ayesha-102" ? 12 : u.id === "usr-usman-105" ? 18 : 2),
+        tasksCount: details.tasks.length,
+        completedTasksCount: completedTasks.length,
+        filesCount: details.files.length,
+        calendarCount: details.calendar.length,
+        gameXp: Number(details.gameProfile?.xp || 0),
+        gameLevel: Number(details.gameProfile?.level || 1),
+        studyStreak: Number(details.studyStreak || 0),
+        downloadedPdfsCount: details.downloadedPdfs.length,
+        customPdfsCount: details.customPdfs.length,
+        savedLecturesCount: details.savedLectures.length,
+        watchedLecturesCount: details.watchedLectures.length,
+        dictBookmarksCount: details.dictBookmarks.length,
+        quizzesCompleted: details.quizHistory.length,
+        notificationsCount: details.notifications.length,
+        voiceTurnsCount: details.voiceHistory.length,
+        chatMessagesCount: details.chatHistory.length,
         lastActiveTimestamp: lastActive,
-        isolatedData,
+        isolatedData: details,
       };
     });
-  }, [getRegisteredUsers, currentUser]);
+  }, [getRegisteredUsers, getStudentFullDetails, currentUser, tick]);
 
   const deleteUserByAdmin = async (userId: string): Promise<{ success: boolean; error?: string }> => {
     if (userId === ADMIN_MASTER_ID) {
       return { success: false, error: "The Master Administrator account (admin0011) cannot be deleted." };
     }
-    const users = getRegisteredUsers();
-    const filtered = users.filter((u) => u.id !== userId);
-    localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(filtered));
 
-    // Clear their isolated storage keys
-    removeUserItem(userId, "tasks");
-    removeUserItem(userId, "files");
-    removeUserItem(userId, "calendar");
-    removeUserItem(userId, "game_profile");
-    removeUserItem(userId, "downloaded_pdf_ids");
-    removeUserItem(userId, "quiz_history");
-    removeUserItem(userId, "study_streak");
-
-    // Persist deletion on server
     try {
-      fetch("/api/users/delete", {
+      const res = await fetch("/api/users/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId }),
-      }).catch(() => {});
-    } catch (e) {}
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to delete user on server." };
+      }
 
-    refreshAdminUsersList();
-    return { success: true };
+      if (Array.isArray(data.allUsers)) {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
+      } else {
+        const users = getRegisteredUsers();
+        localStorage.setItem(
+          REGISTERED_USERS_KEY,
+          JSON.stringify(users.filter((u) => u.id !== userId))
+        );
+      }
+
+      [
+        "tasks",
+        "files",
+        "calendar",
+        "game_profile",
+        "games_profile",
+        "downloaded_pdf_ids",
+        "custom_pdfs",
+        "saved_lectures",
+        "watched_lectures",
+        "dict_bookmarks",
+        "dict_recents",
+        "dict_custom_words",
+        "quiz_history",
+        "study_streak",
+        "notifications",
+        "voice_history",
+        "chat_history",
+        "seen_announcement_ids",
+      ].forEach((k) => removeUserItem(userId, k));
+
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error deleting account." };
+    }
   };
 
   const updateUserByAdmin = async (
@@ -1159,7 +1505,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    users[idx] = {
+    const updatedAccount: StoredAccount = {
       ...users[idx],
       ...updates,
       name: updates.name ? updates.name.trim() : users[idx].name,
@@ -1172,18 +1518,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       dailyGoalHours: updates.dailyGoalHours !== undefined ? Number(updates.dailyGoalHours) : users[idx].dailyGoalHours,
     };
 
-    localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
-
-    // Persist update on server
     try {
-      fetch("/api/users/update", {
+      const res = await fetch("/api/users/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, updates }),
-      }).catch(() => {});
-    } catch (e) {}
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to update account on server." };
+      }
+      if (Array.isArray(data.allUsers)) {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
+      } else {
+        users[idx] = updatedAccount;
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
+      }
+    } catch {
+      users[idx] = updatedAccount;
+      localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
+    }
 
-    refreshAdminUsersList();
+    // Keep active session synchronized if editing currently signed-in account
+    if (currentUserRef.current && currentUserRef.current.id === userId) {
+      const nextSessionUser: StudentUser = {
+        ...currentUserRef.current,
+        name: updatedAccount.name,
+        email: updatedAccount.email,
+        grade: updatedAccount.grade,
+        schoolOrCollege: updatedAccount.schoolOrCollege,
+        targetExam: updatedAccount.targetExam,
+        favoriteSubject: updatedAccount.favoriteSubject,
+        dailyGoalHours: updatedAccount.dailyGoalHours,
+        phone: updatedAccount.phone,
+        bio: updatedAccount.bio,
+      };
+      setCurrentUser(nextSessionUser);
+      if (localStorage.getItem(AUTH_SESSION_KEY)) {
+        localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(nextSessionUser));
+      }
+      if (sessionStorage.getItem(AUTH_SESSION_KEY)) {
+        sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(nextSessionUser));
+      }
+    }
+
+    setTick((prev) => prev + 1);
     return { success: true };
   };
 
@@ -1232,93 +1611,158 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isAdmin: false,
     };
 
-    const updatedUsers = [...users, newAccount];
-    localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(updatedUsers));
-
-    // Persist new account on server
     try {
-      await fetch("/api/users/register", {
+      const res = await fetch("/api/users/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newAccount),
       });
-    } catch (e) {}
-
-    refreshAdminUsersList();
-    return { success: true };
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to register account on server." };
+      }
+      if (Array.isArray(data.allUsers)) {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
+      } else {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify([...users, newAccount]));
+      }
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error creating student account." };
+    }
   };
 
-  const addStudentTaskByAdmin = (userId: string, task: any) => {
-    const currentTasks = getUserItem<any[]>(userId, "tasks", []);
-    const newTask = {
-      id: `t-${Date.now()}`,
-      title: task.title,
-      description: task.description || "",
-      category: task.category || "General Study",
-      priority: task.priority || "high",
-      status: "todo",
-      dueDate: task.dueDate || new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0],
-      completed: false,
-    };
-    setUserItem(userId, "tasks", [newTask, ...currentTasks]);
-
-    // Persist updated state to server
+  const addStudentTaskByAdmin = async (
+    userId: string,
+    task: any
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      fetch("/api/users/save-state", {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId,
-          state: extractLocalUserState(userId),
-        }),
-      }).catch(() => {});
-    } catch (e) {}
-
-    refreshAdminUsersList();
+        body: JSON.stringify(task),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to assign task on server." };
+      }
+      if (Array.isArray(data.tasks)) {
+        setUserItem(userId, "tasks", data.tasks);
+      } else {
+        const currentTasks = getUserItem<any[]>(userId, "tasks", []);
+        setUserItem(userId, "tasks", [data.task, ...currentTasks]);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error assigning task." };
+    }
   };
 
-  const deleteStudentTaskByAdmin = (userId: string, taskId: string) => {
-    const currentTasks = getUserItem<any[]>(userId, "tasks", []);
-    const filtered = currentTasks.filter((t) => t.id !== taskId);
-    setUserItem(userId, "tasks", filtered);
-
-    // Persist updated state to server
+  const toggleStudentTaskByAdmin = async (
+    userId: string,
+    taskId: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      fetch("/api/users/save-state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId,
-          state: extractLocalUserState(userId),
-        }),
-      }).catch(() => {});
-    } catch (e) {}
-
-    refreshAdminUsersList();
+      const res = await fetch(
+        `/api/admin/users/${encodeURIComponent(userId)}/tasks/${encodeURIComponent(taskId)}/toggle`,
+        { method: "PATCH" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to toggle task status." };
+      }
+      if (Array.isArray(data.tasks)) {
+        setUserItem(userId, "tasks", data.tasks);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error updating task." };
+    }
   };
 
-  const resetStudentIsolatedDataByAdmin = (userId: string) => {
-    if (userId === ADMIN_MASTER_ID) return;
-    setUserItem(userId, "tasks", []);
-    setUserItem(userId, "files", []);
-    setUserItem(userId, "calendar", []);
-    setUserItem(userId, "downloaded_pdf_ids", []);
-    setUserItem(userId, "game_profile", { level: 1, xp: 0, title: "Novice Scholar", totalGamesPlayed: 0, totalCorrect: 0, highestStreak: 0, soundEnabled: true, badges: [] });
-    setUserItem(userId, "study_streak", 0);
-
-    // Persist state reset to server
+  const deleteStudentTaskByAdmin = async (
+    userId: string,
+    taskId: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      fetch("/api/users/save-state", {
+      const res = await fetch(
+        `/api/admin/users/${encodeURIComponent(userId)}/tasks/${encodeURIComponent(taskId)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to delete task on server." };
+      }
+      if (Array.isArray(data.tasks)) {
+        setUserItem(userId, "tasks", data.tasks);
+      } else {
+        const currentTasks = getUserItem<any[]>(userId, "tasks", []);
+        setUserItem(userId, "tasks", currentTasks.filter((t) => t.id !== taskId));
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error deleting task." };
+    }
+  };
+
+  const resetStudentIsolatedDataByAdmin = async (
+    userId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (userId === ADMIN_MASTER_ID) {
+      return { success: false, error: "Master administrator data is protected." };
+    }
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/reset-state`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId,
-          state: extractLocalUserState(userId),
-        }),
-      }).catch(() => {});
-    } catch (e) {}
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to reset student state." };
+      }
+      const freshGp = {
+        level: 1,
+        xp: 0,
+        xpToNextLevel: 300,
+        title: "Novice Scholar",
+        totalGamesPlayed: 0,
+        totalCorrect: 0,
+        highestStreak: 0,
+        soundEnabled: true,
+        badges: [],
+        history: [],
+      };
+      setUserItem(userId, "tasks", []);
+      setUserItem(userId, "files", []);
+      setUserItem(userId, "calendar", []);
+      setUserItem(userId, "downloaded_pdf_ids", []);
+      setUserItem(userId, "custom_pdfs", []);
+      setUserItem(userId, "saved_lectures", []);
+      setUserItem(userId, "watched_lectures", []);
+      setUserItem(userId, "dict_bookmarks", []);
+      setUserItem(userId, "dict_recents", []);
+      setUserItem(userId, "dict_custom_words", []);
+      setUserItem(userId, "quiz_history", []);
+      setUserItem(userId, "notifications", []);
+      setUserItem(userId, "voice_history", []);
+      setUserItem(userId, "chat_history", []);
+      setUserItem(userId, "game_profile", freshGp);
+      setUserItem(userId, "games_profile", freshGp);
+      setUserItem(userId, "study_streak", 0);
 
-    refreshAdminUsersList();
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error resetting state." };
+    }
   };
 
   const impersonateStudent = (studentId: string) => {
@@ -1384,91 +1828,259 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return login(ADMIN_MASTER_ID, ADMIN_MASTER_PASS, true);
   };
 
-  const grantStudentXpByAdmin = (userId: string, xpAmount: number) => {
-    const currentProfile = getUserItem<any>(userId, "game_profile", {
-      level: 1,
-      xp: 0,
-      xpToNextLevel: 250,
-      title: "Novice Scholar",
-      totalGamesPlayed: 0,
-      totalCorrect: 0,
-      highestStreak: 0,
-      soundEnabled: true,
-      badges: [],
-      history: [],
-    });
-
-    const newXp = Math.max(0, (currentProfile.xp || 0) + xpAmount);
-    const newLevel = Math.max(1, Math.floor(newXp / 300) + 1);
-    const updatedProfile = {
-      ...currentProfile,
-      xp: newXp,
-      level: newLevel,
-      xpToNextLevel: newLevel * 300,
-    };
-
-    setUserItem(userId, "game_profile", updatedProfile);
-
-    // Save to server
+  const grantStudentXpByAdmin = async (
+    userId: string,
+    xpAmount: number
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      fetch("/api/users/save-state", {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/grant-xp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ xpAmount }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to update student XP." };
+      }
+      if (data.gameProfile) {
+        setUserItem(userId, "game_profile", data.gameProfile);
+        setUserItem(userId, "games_profile", data.gameProfile);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error adjusting XP." };
+    }
+  };
+
+  const addStudentCalendarEventByAdmin = async (
+    userId: string,
+    event: any
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/calendar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(event),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to schedule event on server." };
+      }
+      if (Array.isArray(data.calendar)) {
+        setUserItem(userId, "calendar", data.calendar);
+      } else {
+        const currentEvents = getUserItem<any[]>(userId, "calendar", []);
+        setUserItem(userId, "calendar", [...currentEvents, data.event]);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error scheduling event." };
+    }
+  };
+
+  const deleteStudentCalendarEventByAdmin = async (
+    userId: string,
+    eventId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch(
+        `/api/admin/users/${encodeURIComponent(userId)}/calendar/${encodeURIComponent(eventId)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to delete calendar event." };
+      }
+      if (Array.isArray(data.calendar)) {
+        setUserItem(userId, "calendar", data.calendar);
+      } else {
+        const currentEvents = getUserItem<any[]>(userId, "calendar", []);
+        setUserItem(userId, "calendar", currentEvents.filter((e) => e.id !== eventId));
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error deleting calendar event." };
+    }
+  };
+
+  const broadcastAnnouncementByAdmin = async (
+    title: string,
+    message: string,
+    type = "urgent",
+    targetGrade = "All Levels"
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch("/api/admin/announcements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
-          state: extractLocalUserState(userId),
+          title,
+          message,
+          type,
+          targetGrade,
+          createdBy: currentUserRef.current?.name || "Danish (Master Admin)",
         }),
-      }).catch(() => {});
-    } catch (e) {}
-
-    refreshAdminUsersList();
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to publish announcement on server" };
+      }
+      // Deliver immediately to active user's local notification store with canonical srv-<id> and mark seen
+      const annId = data.announcement?.id;
+      if (annId && currentUserRef.current?.id) {
+        notifyUserStateUpdated(currentUserRef.current.id);
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error publishing announcement" };
+    }
   };
 
-  const addStudentCalendarEventByAdmin = (userId: string, event: any) => {
-    const currentEvents = getUserItem<any[]>(userId, "calendar", []);
-    const newEvent = {
-      id: `c-adm-${Date.now()}`,
-      title: event.title || "Admin Scheduled Revision",
-      description: event.description || "Assigned by Master Administrator Danish",
-      startTime: event.startTime || new Date(Date.now() + 86400000).toISOString(),
-      endTime: event.endTime || new Date(Date.now() + 86400000 + 3600000).toISOString(),
-      category: event.category || "study",
-      source: "Master Admin Danish",
-      synced: true,
-    };
+  const fetchStudentLiveDetailsByAdmin = useCallback(
+    async (
+      userId: string
+    ): Promise<{ success: boolean; details?: StudentIsolatedData; error?: string }> => {
+      try {
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/full-details`);
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          return { success: false, error: data.error || "Failed to load server user details." };
+        }
+        if (data.user) {
+          const users = getRegisteredUsers();
+          const idx = users.findIndex((u) => u.id === userId);
+          if (idx !== -1) {
+            users[idx] = { ...users[idx], ...data.user };
+          } else {
+            users.push(data.user);
+          }
+          localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
+        }
+        if (data.state && typeof data.state === "object") {
+          applyServerUserState(userId, data.state);
+          notifyUserStateUpdated(userId);
+        }
+        setTick((prev) => prev + 1);
+        return { success: true, details: getStudentFullDetails(userId) };
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Network error fetching user dossier." };
+      }
+    },
+    [getRegisteredUsers, getStudentFullDetails, notifyUserStateUpdated]
+  );
 
-    setUserItem(userId, "calendar", [...currentEvents, newEvent]);
-
-    // Save to server
+  const sendDirectNotificationByAdmin = async (
+    userId: string,
+    payload: { title: string; message: string; type?: string }
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      fetch("/api/users/save-state", {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/notify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId,
-          state: extractLocalUserState(userId),
-        }),
-      }).catch(() => {});
-    } catch (e) {}
-
-    refreshAdminUsersList();
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to send notification." };
+      }
+      if (Array.isArray(data.notifications)) {
+        setUserItem(userId, "notifications", data.notifications);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error sending notification." };
+    }
   };
 
-  const broadcastAnnouncementByAdmin = (title: string, message: string, type = "urgent") => {
-    const notifItem = {
-      id: `notif-adm-${Date.now()}`,
-      title: `👑 [Admin Broadcast] ${title}`,
-      message,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      type,
-      read: false,
-    };
+  const deleteStudentFileByAdmin = async (
+    userId: string,
+    fileId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch(
+        `/api/admin/users/${encodeURIComponent(userId)}/files/${encodeURIComponent(fileId)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to delete student file." };
+      }
+      if (Array.isArray(data.files)) {
+        setUserItem(userId, "files", data.files);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error deleting file." };
+    }
+  };
 
-    const users = getRegisteredUsers();
-    users.forEach((u) => {
-      const uNotifs = getUserItem<any[]>(u.id, "notifications", []);
-      setUserItem(u.id, "notifications", [notifItem, ...uNotifs]);
-    });
+  const deleteStudentPdfByAdmin = async (
+    userId: string,
+    pdfId: string,
+    kind: "downloaded" | "custom"
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch(
+        `/api/admin/users/${encodeURIComponent(userId)}/notes/${encodeURIComponent(pdfId)}?kind=${encodeURIComponent(kind)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to remove note record." };
+      }
+      if (Array.isArray(data.downloadedPdfs)) {
+        setUserItem(userId, "downloaded_pdf_ids", data.downloadedPdfs);
+      }
+      if (Array.isArray(data.customPdfs)) {
+        setUserItem(userId, "custom_pdfs", data.customPdfs);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error removing note record." };
+    }
+  };
+
+  const updateStudentStudyStatsByAdmin = async (
+    userId: string,
+    payload: {
+      studyStreak?: number;
+      xp?: number;
+      level?: number;
+      title?: string;
+      clearKey?: string;
+    }
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/study-stats`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to update study statistics." };
+      }
+      if (data.state && typeof data.state === "object") {
+        applyServerUserState(userId, data.state, true);
+      }
+      notifyUserStateUpdated(userId);
+      setTick((prev) => prev + 1);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Network error updating study statistics." };
+    }
   };
 
   return (
@@ -1479,7 +2091,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         isAdmin,
         isImpersonating,
+        dataVersion: tick,
         login,
+        loginWithGoogle,
         signup,
         logout,
         updateProfile,
@@ -1489,6 +2103,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateUserByAdmin,
         createUserByAdmin,
         addStudentTaskByAdmin,
+        toggleStudentTaskByAdmin,
         deleteStudentTaskByAdmin,
         resetStudentIsolatedDataByAdmin,
         impersonateStudent,
@@ -1497,7 +2112,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginAsAdminMaster,
         grantStudentXpByAdmin,
         addStudentCalendarEventByAdmin,
+        deleteStudentCalendarEventByAdmin,
         broadcastAnnouncementByAdmin,
+        fetchStudentLiveDetailsByAdmin,
+        sendDirectNotificationByAdmin,
+        deleteStudentFileByAdmin,
+        deleteStudentPdfByAdmin,
+        updateStudentStudyStatsByAdmin,
       }}
     >
       {children}

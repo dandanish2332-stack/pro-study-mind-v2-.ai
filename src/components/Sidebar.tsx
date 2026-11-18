@@ -26,7 +26,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
-  const { tr, setIsVoiceModalOpen } = useApp();
+  const { tr, setIsVoiceModalOpen, platformSettings } = useApp();
   const { isAdmin } = useAuth();
 
   const navItems = [
@@ -43,7 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
     { id: "tasks", label: tr("navTasks"), icon: CheckCircle2 },
     { id: "calendar", label: tr("navCalendar"), icon: Calendar },
     ...(isAdmin
-      ? [{ id: "admin", label: "Admin Hub", icon: ShieldCheck, badge: "Secret" }]
+      ? [{ id: "admin", label: "Admin Dashboard", icon: ShieldCheck, badge: "Backend" }]
       : []),
     { id: "profile", label: "My Profile", icon: User, badge: "Settings" },
   ];
@@ -148,9 +148,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         </div>
 
         {/* Adsterra Sidebar Placements */}
-        <AdsterraSmartlink compact={true} className="mt-4" />
-        <AdsterraBanner bannerId="banner1" mediaQuery="(min-width: 768px)" className="mt-4" />
-        <AdsterraBanner bannerId="banner2" mediaQuery="(min-width: 768px)" className="mt-4" />
+        {platformSettings?.adPlacementsEnabled !== false && (
+          <>
+            <AdsterraSmartlink compact={true} className="mt-4" />
+            <AdsterraBanner bannerId="banner1" mediaQuery="(min-width: 768px)" className="mt-4" />
+            <AdsterraBanner bannerId="banner2" mediaQuery="(min-width: 768px)" className="mt-4" />
+          </>
+        )}
       </aside>
     </>
   );

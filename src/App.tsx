@@ -31,6 +31,7 @@ import { AdsterraBanner, AdsterraSmartlink } from "./components/AdsterraBanner";
 
 const AppContent: React.FC = () => {
   const { isAuthenticated, isLoading, isImpersonating, exitImpersonation, currentUser } = useAuth();
+  const { platformSettings } = useApp();
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [pdfSubjectFilter, setPdfSubjectFilter] = useState<string | null>(null);
   const [isNotifModalOpen, setIsNotifModalOpen] = useState<boolean>(false);
@@ -131,7 +132,15 @@ const AppContent: React.FC = () => {
         onOpenNotifications={() => setIsNotifModalOpen(true)}
         onOpenWelcomeIntro={() => setIsWelcomeSplashOpen(true)}
         onOpenProfile={() => setActiveTab("profile")}
+        onOpenAdmin={() => setActiveTab("admin")}
       />
+
+      {/* Server-Controlled Platform Notice Banner */}
+      {platformSettings?.maintenanceBanner && (
+        <div className="bg-indigo-600 text-white px-4 py-2 text-xs font-semibold text-center">
+          {platformSettings.maintenanceBanner}
+        </div>
+      )}
 
       {/* Main Workspace Layout */}
       <div className="flex flex-col md:flex-row max-w-7xl mx-auto">
@@ -140,20 +149,27 @@ const AppContent: React.FC = () => {
 
         {/* Dynamic Content View Area */}
         <main className="flex-1 p-4 sm:p-6 min-w-0">
-          {/* Desktop Leaderboard (728x90), Tablet Banner (468x60), Mobile Banner (320x50) */}
-          <AdsterraBanner bannerId="banner5" mediaQuery="(min-width: 1280px)" className="mb-5" />
-          <AdsterraBanner bannerId="banner4" mediaQuery="(min-width: 640px) and (max-width: 1279px)" className="mb-4" />
-          <AdsterraBanner bannerId="banner6" mediaQuery="(max-width: 639px)" className="mb-4" />
+          {platformSettings?.adPlacementsEnabled !== false && (
+            <>
+              <AdsterraBanner bannerId="banner5" mediaQuery="(min-width: 1280px)" className="mb-5" />
+              <AdsterraBanner bannerId="banner4" mediaQuery="(min-width: 640px) and (max-width: 1279px)" className="mb-4" />
+              <AdsterraBanner bannerId="banner6" mediaQuery="(max-width: 639px)" className="mb-4" />
+            </>
+          )}
           {renderActiveView()}
-          <AdsterraNativeBanner className="mt-6" />
-          <div className="mt-5 max-w-6xl mx-auto space-y-4">
-            <AdsterraSmartlink />
-            <div className="flex flex-col lg:flex-row items-center justify-center gap-4">
-              <AdsterraBanner bannerId="banner3" />
-              <AdsterraBanner bannerId="banner4" mediaQuery="(min-width: 640px)" />
-              <AdsterraBanner bannerId="banner1" mediaQuery="(max-width: 767px)" />
-            </div>
-          </div>
+          {platformSettings?.adPlacementsEnabled !== false && (
+            <>
+              <AdsterraNativeBanner className="mt-6" />
+              <div className="mt-5 max-w-6xl mx-auto space-y-4">
+                <AdsterraSmartlink />
+                <div className="flex flex-col lg:flex-row items-center justify-center gap-4">
+                  <AdsterraBanner bannerId="banner3" />
+                  <AdsterraBanner bannerId="banner4" mediaQuery="(min-width: 640px)" />
+                  <AdsterraBanner bannerId="banner1" mediaQuery="(max-width: 767px)" />
+                </div>
+              </div>
+            </>
+          )}
         </main>
       </div>
 

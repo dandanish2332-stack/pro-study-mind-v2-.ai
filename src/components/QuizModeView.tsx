@@ -25,8 +25,10 @@ import {
   Zap,
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
+import { useAuth } from "../context/AuthContext";
 import { QuizQuestion, QuizResult, Flashcard } from "../types";
 import { speakWithVoice, stopSpeaking } from "../utils/voiceEngine";
+import { getUserItem, setUserItem, logUserActivityToServer } from "../utils/userStorage";
 
 // Default Preset Flashcards for quick study
 const INITIAL_FLASHCARDS: Flashcard[] = [
@@ -69,6 +71,7 @@ const INITIAL_FLASHCARDS: Flashcard[] = [
 
 export const QuizModeView: React.FC = () => {
   const { language, selectedVoicePersona, customVoiceURI } = useApp();
+  const { currentUser } = useAuth();
 
   // Active study tab: "quiz" | "flashcards" | "timer"
   const [studyTab, setStudyTab] = useState<"quiz" | "flashcards" | "timer">("quiz");
@@ -1137,6 +1140,51 @@ export const QuizModeView: React.FC = () => {
     }
   };
 
+  const recordedQuizRef = useRef<boolean>(false);
+
+  // Record finished quiz into isolated user quiz_history & sync to server
+  useEffect(() => {
+    if (!quizFinished) {
+      recordedQuizRef.current = false;
+      return;
+    }
+    if (recordedQuizRef.current || questions.length === 0 || !currentUser?.id) return;
+    recordedQuizRef.current = true;
+
+    let score = 0;
+    questions.forEach((q) => {
+      if (userAnswers[q.id] === q.correctAnswerIndex) {
+        score++;
+      }
+    });
+    const percentage = Math.round((score / questions.length) * 100);
+    const entry: QuizResult = {
+      id: `qz-${Date.now()}`,
+      topic: topic || "Study Quiz",
+      score,
+      correctAnswers: score,
+      totalQuestions: questions.length,
+      percentage,
+      completedAt: new Date().toISOString(),
+    };
+    const prevHistory = getUserItem<QuizResult[]>(currentUser.id, "quiz_history", []);
+    const nextHistory = [entry, ...prevHistory].slice(0, 100);
+    setUserItem(currentUser.id, "quiz_history", nextHistory);
+    fetch("/api/users/save-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: currentUser.id, state: { quiz_history: nextHistory } }),
+    }).catch(() => {});
+    logUserActivityToServer({
+      userId: currentUser.id,
+      userEmail: currentUser.email,
+      userName: currentUser.name,
+      feature: "quiz",
+      action: "QUIZ_COMPLETED",
+      details: `Completed "${entry.topic}" quiz (${score}/${questions.length} · ${percentage}%)`,
+    });
+  }, [quizFinished, questions, userAnswers, topic, currentUser?.id, currentUser?.email, currentUser?.name]);
+
   // Reset Quiz
   const handleResetQuiz = () => {
     if (autoAdvanceTimerRef.current) {
@@ -1144,6 +1192,7 @@ export const QuizModeView: React.FC = () => {
       autoAdvanceTimerRef.current = null;
     }
     stopSpeaking();
+    recordedQuizRef.current = false;
     setQuestions([]);
     setCurrentIdx(0);
     setSelectedOption(null);

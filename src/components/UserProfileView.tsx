@@ -30,7 +30,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useApp } from "../context/AppContext";
 import { StudentGrade } from "../types";
-import { getUserItem, setUserItem } from "../utils/userStorage";
+import { getUserItem, setUserItem, persistUserStateBatchToServer, logUserActivityToServer } from "../utils/userStorage";
 
 interface UserProfileViewProps {
   setActiveTab?: (tab: string) => void;
@@ -230,7 +230,7 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({ setActiveTab }
     setUserItem(currentUser.id, "dict_recents", []);
     setUserItem(currentUser.id, "dict_custom_words", []);
     setUserItem(currentUser.id, "study_streak", 0);
-    setUserItem(currentUser.id, "games_profile", {
+    const freshGp = {
       level: 0,
       xp: 0,
       xpToNextLevel: 250,
@@ -241,6 +241,31 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({ setActiveTab }
       soundEnabled: true,
       badges: [],
       history: [],
+    };
+    setUserItem(currentUser.id, "games_profile", freshGp);
+    setUserItem(currentUser.id, "game_profile", freshGp);
+    persistUserStateBatchToServer(currentUser.id, {
+      tasks: [],
+      files: [],
+      calendar: [],
+      downloaded_pdf_ids: [],
+      custom_pdfs: [],
+      saved_lectures: [],
+      watched_lectures: [],
+      dict_bookmarks: [],
+      dict_recents: [],
+      dict_custom_words: [],
+      study_streak: 0,
+      games_profile: freshGp,
+      game_profile: freshGp,
+    });
+    logUserActivityToServer({
+      userId: currentUser.id,
+      userEmail: currentUser.email,
+      userName: currentUser.name,
+      feature: "profile",
+      action: "WORKSPACE_SELF_RESET",
+      details: "Student reset personal workspace data",
     });
     clearVoiceConversationHistory();
     setIsResetConfirmOpen(false);

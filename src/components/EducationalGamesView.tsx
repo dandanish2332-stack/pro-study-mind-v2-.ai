@@ -42,7 +42,13 @@ import {
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import { useAuth } from "../context/AuthContext";
-import { getUserItem, setUserItem } from "../utils/userStorage";
+import {
+  getUserItem,
+  setUserItem,
+  persistUserKeyToServer,
+  persistUserStateBatchToServer,
+  logUserActivityToServer,
+} from "../utils/userStorage";
 import {
   EducationalGameMeta,
   GameQuestionItem,
@@ -109,17 +115,39 @@ export const EducationalGamesView: React.FC = () => {
     return getUserItem<StudentGameProfile>(currentUser?.id, "games_profile", getFreshGamesProfile());
   });
 
+  const lastSyncedProfileRef = useRef<string>(
+    JSON.stringify(getUserItem<StudentGameProfile>(currentUser?.id, "games_profile", getFreshGamesProfile()))
+  );
+
   // Re-synchronize profile when user switches
   useEffect(() => {
-    setProfile(getUserItem<StudentGameProfile>(currentUser?.id, "games_profile", getFreshGamesProfile()));
+    const loaded = getUserItem<StudentGameProfile>(currentUser?.id, "games_profile", getFreshGamesProfile());
+    lastSyncedProfileRef.current = JSON.stringify(loaded);
+    setProfile(loaded);
   }, [currentUser?.id]);
 
-  // Sync profile to user storage
+  // Sync profile to user storage & backend when mutated
   useEffect(() => {
     if (currentUser?.id) {
       setUserItem(currentUser.id, "games_profile", profile);
+      setUserItem(currentUser.id, "game_profile", profile);
+      const serialized = JSON.stringify(profile);
+      if (serialized !== lastSyncedProfileRef.current) {
+        lastSyncedProfileRef.current = serialized;
+        persistUserKeyToServer(currentUser.id, "games_profile", profile);
+        if (profile.totalGamesPlayed > 0) {
+          logUserActivityToServer({
+            userId: currentUser.id,
+            userEmail: currentUser.email,
+            userName: currentUser.name,
+            feature: "games",
+            action: "GAME_PROGRESS_UPDATED",
+            details: `Level ${profile.level} · ${profile.xp} XP · ${profile.totalGamesPlayed} games played`,
+          });
+        }
+      }
     }
-  }, [profile, currentUser?.id]);
+  }, [profile, currentUser?.id, currentUser?.email, currentUser?.name]);
 
   // Main Navigation Modes: "hub" | "play" | "summary" | "badges"
   const [viewMode, setViewMode] = useState<"hub" | "play" | "summary" | "badges">("hub");
@@ -1680,9 +1708,17 @@ export const EducationalGamesView: React.FC = () => {
     setProfile(clean);
     if (currentUser?.id) {
       setUserItem(currentUser.id, "games_profile", clean);
+      setUserItem(currentUser.id, "game_profile", clean);
       setUserItem(currentUser.id, "study_streak", 0);
       setUserItem(currentUser.id, "saved_lectures", []);
       setUserItem(currentUser.id, "watched_lectures", []);
+      persistUserStateBatchToServer(currentUser.id, {
+        games_profile: clean,
+        game_profile: clean,
+        study_streak: 0,
+        saved_lectures: [],
+        watched_lectures: [],
+      });
     }
   };
 

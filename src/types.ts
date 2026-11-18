@@ -646,7 +646,7 @@ export interface StudentUser {
   phone?: string;
   favoriteSubject?: string;
   dailyGoalHours?: number;
-  provider?: "email";
+  provider?: "email" | "google" | "guest";
   joinedDate: string;
   lastLogin: string;
   isAdmin?: boolean;
@@ -659,8 +659,18 @@ export interface StudentIsolatedData {
   files: any[];
   calendar: any[];
   downloadedPdfs: string[];
+  customPdfs: any[];
+  savedLectures: string[];
+  watchedLectures: string[];
+  dictBookmarks: string[];
+  dictRecents: string[];
+  dictCustomWords: any[];
   gameProfile: any;
   studyStreak: number;
+  quizHistory: any[];
+  notifications: any[];
+  voiceHistory: any[];
+  chatHistory: any[];
 }
 
 export interface AdminUserProgressDetails extends StudentUser {
@@ -669,10 +679,20 @@ export interface AdminUserProgressDetails extends StudentUser {
   lastActiveFormatted: string;
   tasksCount: number;
   completedTasksCount: number;
+  filesCount: number;
+  calendarCount: number;
   gameXp: number;
   gameLevel: number;
+  studyStreak: number;
   downloadedPdfsCount: number;
+  customPdfsCount: number;
+  savedLecturesCount: number;
+  watchedLecturesCount: number;
+  dictBookmarksCount: number;
   quizzesCompleted: number;
+  notificationsCount: number;
+  voiceTurnsCount: number;
+  chatMessagesCount: number;
   lastActiveTimestamp?: number;
   isolatedData?: StudentIsolatedData;
 }
@@ -681,4 +701,158 @@ export interface AuthSessionState {
   currentUser: StudentUser | null;
   isAuthenticated: boolean;
 }
+
+export interface ServerAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  type: "urgent" | "info" | "sync" | "security" | "reminder";
+  targetGrade: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface AdminAuditLog {
+  id: string;
+  timestamp: string;
+  category: "auth" | "admin" | "user" | "system";
+  action: string;
+  actor: string;
+  target?: string;
+  details: string;
+  status: "success" | "warning" | "error";
+}
+
+export interface PlatformSettings {
+  platformName: string;
+  supportEmail: string;
+  allowPublicSignup: boolean;
+  aiTutorEnabled: boolean;
+  adPlacementsEnabled: boolean;
+  defaultDailyGoalHours: number;
+  maintenanceBanner: string;
+  updatedAt: string;
+}
+
+export interface FastCacheStats {
+  size: number;
+  maxItems: number;
+  ttlMinutes: number;
+  hits: number;
+  misses: number;
+  hitRatePercent: number;
+}
+
+export interface AdminServerOverview {
+  server: {
+    status: "healthy" | "degraded";
+    uptimeSeconds: number;
+    startedAt: string;
+    nodeVersion: string;
+    platform: string;
+    pid: number;
+    memory: {
+      rssMb: number;
+      heapUsedMb: number;
+      heapTotalMb: number;
+    };
+  };
+  ai: {
+    geminiConfigured: boolean;
+    activeCooldowns: Record<string, number>;
+    caches: {
+      quiz: FastCacheStats;
+      media: FastCacheStats;
+      voice: FastCacheStats;
+      chat: FastCacheStats;
+    };
+  };
+  traffic: {
+    totalApiRequests: number;
+    avgLatencyMs: number;
+    topRoutes: {
+      route: string;
+      hits: number;
+      errors: number;
+      avgLatencyMs: number;
+      lastCalledAt: string;
+    }[];
+    recentErrors: {
+      timestamp: string;
+      route: string;
+      statusCode: number;
+      message: string;
+    }[];
+  };
+  database: {
+    totalUsers: number;
+    onlineUsers: number;
+    offlineUsers: number;
+    totalTasks: number;
+    completedTasks: number;
+    totalFiles: number;
+    totalCalendarEvents: number;
+    totalQuizzes: number;
+    totalXp: number;
+    announcementsCount: number;
+    auditLogsCount: number;
+    storageFiles: {
+      name: string;
+      bytes: number;
+    }[];
+  };
+  settings: PlatformSettings;
+}
+
+export interface GmailMessageSummary {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  snippet: string;
+  labelIds: string[];
+  isUnread: boolean;
+}
+
+export interface GmailMessageDetail extends GmailMessageSummary {
+  bodyText: string;
+}
+
+export interface EmailDispatchLog {
+  id: string;
+  timestamp: string;
+  direction: "outbound" | "inbound_sync";
+  actor: string;
+  to: string;
+  from?: string;
+  subject: string;
+  snippet?: string;
+  gmailMessageId?: string;
+  status: "sent" | "synced" | "failed";
+  error?: string;
+}
+
+export interface UserActivityLog {
+  id: string;
+  timestamp: string;
+  userId: string;
+  userEmail: string;
+  userName?: string;
+  feature: "auth" | "quiz" | "files" | "tasks" | "calendar" | "pdfs" | "lectures" | "dictionary" | "games" | "ai" | "voice" | "gmail" | "profile" | "admin";
+  action: string;
+  details: string;
+  metadata?: Record<string, any>;
+}
+
+export interface AdminLogsSummary {
+  auditCount: number;
+  authCount: number;
+  activityCount: number;
+  emailCount: number;
+  errorCount: number;
+  totalApiRequests: number;
+}
+
 

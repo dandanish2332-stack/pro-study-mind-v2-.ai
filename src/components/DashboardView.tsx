@@ -44,7 +44,7 @@ const CLASS_BANDS = [
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNavigateToPDFs }) => {
   const { files, tasks, setIsVoiceModalOpen, tr } = useApp();
-  const { currentUser } = useAuth();
+  const { currentUser, isAdmin } = useAuth();
 
   const [selectedClassBand, setSelectedClassBand] = useState<string>("college");
   const [revealedDailyAnswer, setRevealedDailyAnswer] = useState<boolean>(false);
@@ -105,6 +105,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
             >
               <User className="w-4 h-4 text-indigo-400" /> My Profile & Settings
             </button>
+            {isAdmin && (
+              <button
+                onClick={() => setActiveTab("admin")}
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow transition-all cursor-pointer"
+              >
+                <ShieldCheck className="w-4 h-4" /> Open Admin Dashboard
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -146,6 +154,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
                 </button>
               );
             })}
+          </div>
+          <div className="flex items-center justify-between pt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <span>
+              Selected band:{" "}
+              <strong className="text-slate-800 dark:text-slate-200">
+                {CLASS_BANDS.find((b) => b.id === selectedClassBand)?.label}
+              </strong>
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => (onNavigateToPDFs ? onNavigateToPDFs() : setActiveTab("pdfs"))}
+                className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+              >
+                Open PDF Notes →
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("lectures")}
+                className="font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+              >
+                Watch Lectures →
+              </button>
+            </div>
           </div>
         </div>
 

@@ -10,6 +10,7 @@ import {
   Brain,
   LogOut,
   User,
+  ShieldCheck,
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import { useAuth } from "../context/AuthContext";
@@ -20,9 +21,15 @@ interface HeaderProps {
   onOpenNotifications: () => void;
   onOpenWelcomeIntro?: () => void;
   onOpenProfile?: () => void;
+  onOpenAdmin?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenNotifications, onOpenWelcomeIntro, onOpenProfile }) => {
+export const Header: React.FC<HeaderProps> = ({
+  onOpenNotifications,
+  onOpenWelcomeIntro,
+  onOpenProfile,
+  onOpenAdmin,
+}) => {
   const {
     language,
     setLanguage,
@@ -89,10 +96,22 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications, onOpenWelco
 
         {/* Right Actions */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {isAdmin && onOpenAdmin && (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              title="Open Backend & Master Admin Dashboard"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Admin Dashboard</span>
+            </button>
+          )}
+
           {/* Voice Mode Button */}
           <button
             onClick={() => setIsVoiceModalOpen(true)}
-            className="relative flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white shadow-sm shadow-indigo-500/20 active:scale-95 transition-all"
+            className="relative flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white shadow-sm shadow-indigo-500/20 active:scale-95 transition-all whitespace-nowrap shrink-0"
             title="Open Voice Assistant Modal"
           >
             <Mic className="w-4 h-4 animate-pulse text-cyan-300" />

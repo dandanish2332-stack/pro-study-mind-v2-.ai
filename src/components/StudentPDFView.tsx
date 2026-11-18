@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   FileDown,
   Download,
@@ -53,7 +53,7 @@ import {
   SearchEngineResult,
 } from "../services/curriculumNotesEngine";
 import { useAuth } from "../context/AuthContext";
-import { getUserItem, setUserItem } from "../utils/userStorage";
+import { getUserItem, setUserItem, persistUserKeyToServer, logUserActivityToServer } from "../utils/userStorage";
 
 interface StudentPDFViewProps {
   initialSubjectFilter?: string | null;
@@ -501,19 +501,38 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
   }, [searchTerm, selectedSubject, selectedGrade, selectedCategory, selectedPlatform, searchSortBy, showDownloadedOnly]);
 
   // Re-synchronize custom PDFs and downloaded IDs when user changes
+  const lastSyncedDownloadedRef = useRef<string>("");
+
+  // Re-synchronize downloaded & custom PDFs when user switches
   useEffect(() => {
     const saved = getUserItem<StudentPDFDocument[]>(currentUser?.id, "custom_pdfs", []);
     setPdfList([...initialStudentPDFs, ...saved]);
     const stored = getUserItem<string[]>(currentUser?.id, "downloaded_pdf_ids", []);
+    lastSyncedDownloadedRef.current = JSON.stringify(stored);
     setDownloadedIds(stored);
   }, [currentUser?.id]);
 
-  // Update user storage whenever downloadedIds changes
+  // Update user storage & backend whenever downloadedIds actually changes
   useEffect(() => {
     if (currentUser?.id) {
       setUserItem(currentUser.id, "downloaded_pdf_ids", downloadedIds);
+      const serialized = JSON.stringify(downloadedIds);
+      if (serialized !== lastSyncedDownloadedRef.current) {
+        lastSyncedDownloadedRef.current = serialized;
+        persistUserKeyToServer(currentUser.id, "downloaded_pdf_ids", downloadedIds);
+        if (downloadedIds.length > 0) {
+          logUserActivityToServer({
+            userId: currentUser.id,
+            userEmail: currentUser.email,
+            userName: currentUser.name,
+            feature: "pdfs",
+            action: "PDF_DOWNLOADED",
+            details: `Downloaded PDF library item (${downloadedIds[downloadedIds.length - 1]})`,
+          });
+        }
+      }
     }
-  }, [downloadedIds, currentUser?.id]);
+  }, [downloadedIds, currentUser?.id, currentUser?.email, currentUser?.name]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -547,6 +566,17 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
           const userCustoms = getUserItem<StudentPDFDocument[]>(currentUser?.id, "custom_pdfs", []);
           const updatedCustoms = [newDoc, ...userCustoms];
           setUserItem(currentUser?.id, "custom_pdfs", updatedCustoms);
+          persistUserKeyToServer(currentUser?.id, "custom_pdfs", updatedCustoms);
+          if (currentUser?.id) {
+            logUserActivityToServer({
+              userId: currentUser.id,
+              userEmail: currentUser.email,
+              userName: currentUser.name,
+              feature: "pdfs",
+              action: "GENERATED_CUSTOM_NOTES",
+              details: `Generated AI study guide "${instantTopic.trim()}"`,
+            });
+          }
           showToast(`✨ Generated complete study guide & exam keys for "${instantTopic.trim()}"!`);
         }
       } else {
@@ -654,6 +684,17 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
     const userCustoms = getUserItem<StudentPDFDocument[]>(currentUser?.id, "custom_pdfs", []);
     const updatedCustoms = [newDoc, ...userCustoms];
     setUserItem(currentUser?.id, "custom_pdfs", updatedCustoms);
+    persistUserKeyToServer(currentUser?.id, "custom_pdfs", updatedCustoms);
+    if (currentUser?.id) {
+      logUserActivityToServer({
+        userId: currentUser.id,
+        userEmail: currentUser.email,
+        userName: currentUser.name,
+        feature: "pdfs",
+        action: "CREATED_CUSTOM_PDF",
+        details: `Created custom study PDF "${newDoc.title}"`,
+      });
+    }
     setPdfList([newDoc, ...pdfList]);
     setIsBuilderOpen(false);
     handleDownload(newDoc, customStudentName);
