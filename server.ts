@@ -2,6 +2,7 @@ import express from "express";
 import compression from "compression";
 import path from "path";
 import fs from "fs";
+import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { PAKISTANI_LECTURES } from "./src/data/pakistaniLecturesData";
 
@@ -12,19 +13,65 @@ const PORT = process.env.NODE_ENV === "production" && process.env.PORT ? Number(
 app.use(compression());
 app.use(express.json({ limit: "20mb" }));
 
-// Normalize Netlify Function invocation paths (e.g. /.netlify/functions/api/...) to /api/...
-app.use((req, _res, next) => {
-  if (req.url.startsWith("/.netlify/functions/api")) {
-    req.url = req.url.replace(/^\/\.netlify\/functions\/api/, "/api") || "/api";
+// Real-time Server & API Telemetry Tracker
+const serverStartedAt = new Date().toISOString();
+let totalApiRequests = 0;
+let totalApiLatencyMs = 0;
+const routeMetrics = new Map<
+  string,
+  { hits: number; errors: number; totalLatencyMs: number; lastCalledAt: string }
+>();
+const recentApiErrors: {
+  timestamp: string;
+  route: string;
+  statusCode: number;
+  message: string;
+}[] = [];
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api/")) {
+    return next();
   }
+  // Skip telemetry self-polling noise on heartbeat/overview slightly? Still count all real API calls accurately
+  const start = Date.now();
+  const routeKey = `${req.method} ${req.path}`;
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    totalApiRequests += 1;
+    totalApiLatencyMs += duration;
+    const prev = routeMetrics.get(routeKey) || {
+      hits: 0,
+      errors: 0,
+      totalLatencyMs: 0,
+      lastCalledAt: "",
+    };
+    const isError = res.statusCode >= 400;
+    routeMetrics.set(routeKey, {
+      hits: prev.hits + 1,
+      errors: prev.errors + (isError ? 1 : 0),
+      totalLatencyMs: prev.totalLatencyMs + duration,
+      lastCalledAt: new Date().toISOString(),
+    });
+    if (isError) {
+      recentApiErrors.unshift({
+        timestamp: new Date().toISOString(),
+        route: routeKey,
+        statusCode: res.statusCode,
+        message: res.statusMessage || `HTTP ${res.statusCode}`,
+      });
+      if (recentApiErrors.length > 100) recentApiErrors.length = 100;
+    }
+  });
   next();
 });
 
-// In-Memory Fast Cache with LRU eviction and TTL for sub-millisecond repeated responses
+// In-Memory Fast Cache with LRU eviction, TTL, and Hit/Miss Telemetry
 class FastCache<T> {
   private cache = new Map<string, { value: T; expiresAt: number }>();
   private maxItems: number;
   private defaultTtlMs: number;
+  private hits = 0;
+  private misses = 0;
 
   constructor(maxItems = 200, defaultTtlMs = 15 * 60 * 1000) {
     this.maxItems = maxItems;
@@ -33,11 +80,16 @@ class FastCache<T> {
 
   get(key: string): T | undefined {
     const entry = this.cache.get(key);
-    if (!entry) return undefined;
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
+    if (!entry) {
+      this.misses += 1;
       return undefined;
     }
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(key);
+      this.misses += 1;
+      return undefined;
+    }
+    this.hits += 1;
     // Refresh LRU position
     this.cache.delete(key);
     this.cache.set(key, entry);
@@ -59,6 +111,18 @@ class FastCache<T> {
 
   clear(): void {
     this.cache.clear();
+  }
+
+  getStats() {
+    const total = this.hits + this.misses;
+    return {
+      size: this.cache.size,
+      maxItems: this.maxItems,
+      ttlMinutes: Math.round(this.defaultTtlMs / 60000),
+      hits: this.hits,
+      misses: this.misses,
+      hitRatePercent: total > 0 ? Math.round((this.hits / total) * 100) : 0,
+    };
   }
 }
 
@@ -625,6 +689,27 @@ Return strictly valid JSON:
 // API Health Endpoint
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Global AI Tutor toggle enforcement controlled by Master Admin platform settings
+app.use(["/api/ai", "/api/generate-ai-text"], (_req, res, next) => {
+  try {
+    const settingsPath = path.join(process.cwd(), "data", "platform_settings.json");
+    if (fs.existsSync(settingsPath)) {
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+      if (parsed && parsed.aiTutorEnabled === false) {
+        return res.status(503).json({
+          success: false,
+          disabledByAdmin: true,
+          error: "AI Tutor endpoints are currently paused by the Master Administrator.",
+          reply: "AI Tutor endpoints are temporarily paused by the Master Administrator.",
+        });
+      }
+    }
+  } catch {
+    // Allow request if settings file cannot be parsed
+  }
+  return next();
 });
 
 // AI Chatbot & Natural Language Study Assistant (Concurrent Chat + Media Execution)
@@ -4821,10 +4906,15 @@ Output STRICTLY valid JSON with no markdown formatting.`;
 // ============================================================================
 // PERSISTENT USER REGISTRY & STUDENT SYNCHRONIZATION SYSTEM
 // ============================================================================
-const IS_SERVERLESS = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
-const DATA_DIR = IS_SERVERLESS ? "/tmp/data" : path.join(process.cwd(), "data");
+const DATA_DIR = path.join(process.cwd(), "data");
 const USERS_FILE = path.join(DATA_DIR, "users_db.json");
 const USER_STATES_FILE = path.join(DATA_DIR, "user_states.json");
+const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, "announcements.json");
+const AUDIT_LOGS_FILE = path.join(DATA_DIR, "admin_logs.json");
+const SETTINGS_FILE = path.join(DATA_DIR, "platform_settings.json");
+const DELETED_USERS_FILE = path.join(DATA_DIR, "deleted_users.json");
+const EMAIL_LOGS_FILE = path.join(DATA_DIR, "email_logs.json");
+const ACTIVITY_LOGS_FILE = path.join(DATA_DIR, "activity_logs.json");
 
 // Ensure data folder exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -4857,12 +4947,12 @@ const DEFAULT_SERVER_USERS: ServerStoredUser[] = [
   {
     id: "admin0011",
     name: "Danish (Master Administrator)",
-    email: "admin0011",
+    email: "dandanish2332@gmail.com",
     passwordHash: "admin0011",
-    grade: "All Levels",
-    targetExam: "ProStudyMind Control Headquarters",
-    schoolOrCollege: "SPS College Batkhela Campus",
-    favoriteSubject: "Full Platform Control",
+    grade: "All Levels (Master Admin)",
+    targetExam: "PRO Study Mind Command Headquarters",
+    schoolOrCollege: "SPS College Batkhela Campus (Mekhband)",
+    favoriteSubject: "Full Platform Control & Advanced Computer Science",
     dailyGoalHours: 12,
     avatarColor: "from-amber-500 via-rose-600 to-indigo-700",
     provider: "email",
@@ -4989,16 +5079,142 @@ function saveServerUsers(users: ServerStoredUser[]): void {
   }
 }
 
+const DEFAULT_SERVER_USER_STATES: Record<string, any> = {
+  admin0011: {
+    tasks: [
+      { id: "adm-t-1", title: "Verify Pakistan Curriculum Notes for FBISE & BISE Boards (Class 9-12)", description: "Audit all science subjects, KaTeX formulas, and past board questions", status: "completed", priority: "urgent", category: "System Control", dueDate: "2026-03-01", completed: true },
+      { id: "adm-t-2", title: "Audit KaTeX Formula Engine & Organic Chemistry Reaction Diagrams", description: "Ensure complete formula rendering fidelity across web & mobile devices", status: "completed", priority: "high", category: "System Control", dueDate: "2026-03-05", completed: true },
+      { id: "adm-t-3", title: "Inspect Multi-User Student Isolation & Database Integrity", description: "Verify that all student tasks, files, notes, and calendar items remain 100% isolated", status: "completed", priority: "urgent", category: "Security Audit", dueDate: "2026-03-08", completed: true },
+      { id: "adm-t-4", title: "Supervise Live Student Presence & Session Security", description: "Monitor real-time heartbeat and active online learners across boards", status: "in_progress", priority: "urgent", category: "Live Monitoring", dueDate: "2026-03-25", completed: false },
+    ],
+    files: [
+      { id: "adm-f-1", name: "PRO_Study_Mind_Master_Architecture_Specification.pdf", size: 1024 * 340, mimeType: "application/pdf", category: "pdf", tags: ["Architecture", "System", "Confidential"], uploadDate: "Admin Release v2.0", contentSnippet: "Full architecture blueprint of PRO Study Mind multi-user engine, KaTeX math parser, and live presence.", isEncrypted: false },
+      { id: "adm-f-2", name: "BISE_Malakand_Peshawar_FSc_PreMedical_Keys_2026.pdf", size: 1024 * 512, mimeType: "application/pdf", category: "pdf", tags: ["FSc Keys", "Pre-Medical", "Board"], uploadDate: "Yesterday", contentSnippet: "Official verified answer keys and scoring rubric for Class 11 and 12 Board Examinations.", isEncrypted: false },
+    ],
+    calendar: [
+      { id: "adm-c-1", title: "BISE Board Examination Moderation & Review", description: "Moderation session for BISE Malakand and Peshawar model papers", startTime: new Date(Date.now() + 86400000).toISOString(), endTime: new Date(Date.now() + 86400000 + 7200000).toISOString(), category: "work", source: "OmniSync", synced: true },
+    ],
+    downloaded_pdf_ids: ["pdf-bio-11-01", "pdf-bio-11-02", "pdf-bio-12-01", "pdf-phys-11-01", "pdf-chem-11-01", "pdf-math-11-01"],
+    games_profile: {
+      level: 99,
+      xp: 99999,
+      xpToNextLevel: 100000,
+      title: "Grandmaster Platform Architect & Lead Educator",
+      totalGamesPlayed: 150,
+      totalCorrect: 450,
+      highestStreak: 50,
+      soundEnabled: true,
+      badges: [
+        { id: "b-1", title: "Master Architect", description: "Created the PRO Study Mind architecture", category: "Admin", icon: "👑", unlocked: true },
+        { id: "b-2", title: "Curriculum Lead", description: "Verified all Class 1-12 curriculum notes", category: "Academic", icon: "📚", unlocked: true },
+      ],
+      history: [],
+    },
+    study_streak: 365,
+  },
+  "usr-hamza-101": {
+    tasks: [
+      { id: "h-t-1", title: "Chapter 3 Vectors & Scalar Products Practice", description: "Solve all textbook board questions for BISE Malakand", status: "completed", priority: "high", category: "Physics", dueDate: "2026-03-10", completed: true },
+      { id: "h-t-2", title: "Newton's Second Law & Momentum Conservation Derivations", description: "Write full derivation with F=dp/dt in notebook", status: "completed", priority: "urgent", category: "Physics", dueDate: "2026-03-12", completed: true },
+      { id: "h-t-3", title: "Work-Energy Principle & Conservative Forces", description: "Review potential energy curves and gravitational field work", status: "completed", priority: "medium", category: "Physics", dueDate: "2026-03-14", completed: true },
+      { id: "h-t-4", title: "Rotational Dynamics & Torque Equilibrium Numerical Problems", description: "Solve numerical problems 5.1 to 5.6", status: "todo", priority: "urgent", category: "Physics", dueDate: "2026-03-20", completed: false },
+    ],
+    files: [
+      { id: "h-f-1", name: "Physics_Ch3_Vectors_Equilibrium_Solved.pdf", size: 1024 * 78, mimeType: "application/pdf", category: "pdf", tags: ["Physics", "Class 11", "Vectors"], uploadDate: "2 days ago", contentSnippet: "Vectors and equilibrium solved numericals with KaTeX formulas.", isEncrypted: false },
+      { id: "h-f-2", name: "Voice_Memo_Newton_Laws_Derivation.mp3", size: 1024 * 125, mimeType: "audio/webm", category: "audio", tags: ["Voice Memo", "Physics"], uploadDate: "Yesterday", contentSnippet: "Voice explanation of Newton's second law in terms of momentum.", isEncrypted: false },
+    ],
+    calendar: [
+      { id: "h-c-1", title: "Physics Vectors Numerical Sprint", description: "Practice Section C board problems", startTime: new Date(Date.now() + 86400000).toISOString(), endTime: new Date(Date.now() + 86400000 + 3600000).toISOString(), category: "study", source: "System Calendar", synced: true },
+    ],
+    downloaded_pdf_ids: ["pdf-phys-11-01", "pdf-phys-11-02", "pdf-phys-11-03", "pdf-phys-11-04"],
+    games_profile: { level: 3, xp: 580, xpToNextLevel: 900, title: "Physics Apprentice", totalGamesPlayed: 14, totalCorrect: 42, highestStreak: 8, soundEnabled: true, badges: [], history: [] },
+    study_streak: 5,
+    quiz_history: [{ id: "hq-1", topic: "Vectors & Equilibrium", score: 8, correctAnswers: 8, totalQuestions: 10, percentage: 80, completedAt: new Date(Date.now() - 86400000).toISOString() }],
+  },
+  "usr-ayesha-102": {
+    tasks: [
+      { id: "a-t-1", title: "Glycolysis and Krebs Cycle Diagram Memorization", description: "Draw step-by-step cycle with all intermediate ATP/NADH counts", status: "completed", priority: "urgent", category: "Biology", dueDate: "2026-03-08", completed: true },
+      { id: "a-t-2", title: "Electron Transport Chain & ATP Synthase Chemiosmosis", description: "Review proton motive force across inner mitochondrial membrane", status: "completed", priority: "high", category: "Biology", dueDate: "2026-03-11", completed: true },
+      { id: "a-t-3", title: "MDCAT Biology Enzymes Km & Vmax Kinetics Quiz", description: "Practice 50 MCQs from past UHS and KMU papers", status: "completed", priority: "urgent", category: "Biology", dueDate: "2026-03-12", completed: true },
+      { id: "a-t-4", title: "Nervous Coordination: Action Potential & Sodium-Potassium Pump", description: "Graph depolarization, repolarization, and refractory period", status: "todo", priority: "urgent", category: "Biology", dueDate: "2026-03-25", completed: false },
+    ],
+    files: [
+      { id: "a-f-1", name: "MDCAT_Biology_High_Yield_Notes.pdf", size: 1024 * 142, mimeType: "application/pdf", category: "pdf", tags: ["Biology", "MDCAT", "Class 12"], uploadDate: "3 days ago", contentSnippet: "Comprehensive MDCAT Biology formula sheets and high-yield mnemonics.", isEncrypted: false },
+      { id: "a-f-2", name: "Voice_Audio_Summary_Respiration_Cycles.mp3", size: 1024 * 96, mimeType: "audio/webm", category: "audio", tags: ["Voice Memo", "Biology"], uploadDate: "Yesterday", contentSnippet: "Spoken summary of Krebs cycle products and net ATP balance.", isEncrypted: false },
+    ],
+    calendar: [
+      { id: "a-c-1", title: "MDCAT Biology Mock Test Evaluation", description: "Review incorrect questions from UHS past paper 2024", startTime: new Date(Date.now() + 172800000).toISOString(), endTime: new Date(Date.now() + 172800000 + 7200000).toISOString(), category: "exam", source: "System Calendar", synced: true },
+    ],
+    downloaded_pdf_ids: ["pdf-bio-11-01", "pdf-bio-11-02", "pdf-bio-11-03", "pdf-bio-12-01", "pdf-bio-12-02", "pdf-chem-12-01"],
+    games_profile: { level: 5, xp: 1240, xpToNextLevel: 1500, title: "Biology Scholar", totalGamesPlayed: 28, totalCorrect: 86, highestStreak: 15, soundEnabled: true, badges: [], history: [] },
+    study_streak: 9,
+    quiz_history: [{ id: "aq-1", topic: "Cellular Respiration & Enzymes", score: 9, correctAnswers: 9, totalQuestions: 10, percentage: 90, completedAt: new Date(Date.now() - 43200000).toISOString() }],
+  },
+  "usr-bilal-103": {
+    tasks: [
+      { id: "b-t-1", title: "Quadratic Equations Factorization & Completing Square", description: "Exercise 1.1 BISE Mardan SSC-II", status: "completed", priority: "high", category: "Mathematics", dueDate: "2026-03-11", completed: true },
+      { id: "b-t-2", title: "Trigonometric Identities Proof Worksheet", description: "Verify sin^2(x) + cos^2(x) = 1 applications", status: "todo", priority: "medium", category: "Mathematics", dueDate: "2026-03-21", completed: false },
+    ],
+    files: [
+      { id: "b-f-1", name: "Class10_Math_Quadratic_Formula_Sheet.pdf", size: 1024 * 64, mimeType: "application/pdf", category: "pdf", tags: ["Mathematics", "Class 10"], uploadDate: "4 days ago", contentSnippet: "Complete quadratic equation discriminant & roots formulas.", isEncrypted: false },
+    ],
+    calendar: [],
+    downloaded_pdf_ids: ["pdf-math-10-01", "pdf-phys-10-01"],
+    games_profile: { level: 2, xp: 340, xpToNextLevel: 600, title: "Math Explorer", totalGamesPlayed: 9, totalCorrect: 27, highestStreak: 6, soundEnabled: true, badges: [], history: [] },
+    study_streak: 4,
+  },
+  "usr-zainab-104": {
+    tasks: [
+      { id: "z-t-1", title: "Atomic Structure & Electronic Configuration", description: "Write subshell configurations up to Z=30", status: "completed", priority: "high", category: "Chemistry", dueDate: "2026-03-12", completed: true },
+      { id: "z-t-2", title: "Chemical Bonding Covalent vs Ionic Properties", description: "Compare melting points and conductivity", status: "todo", priority: "medium", category: "Chemistry", dueDate: "2026-03-24", completed: false },
+    ],
+    files: [],
+    calendar: [],
+    downloaded_pdf_ids: ["pdf-chem-09-01"],
+    games_profile: { level: 2, xp: 310, xpToNextLevel: 600, title: "Science Initiate", totalGamesPlayed: 7, totalCorrect: 21, highestStreak: 5, soundEnabled: true, badges: [], history: [] },
+    study_streak: 3,
+  },
+  "usr-usman-105": {
+    tasks: [
+      { id: "u-t-1", title: "Organic Chemistry Functional Groups & IUPAC Nomenclature", description: "Complete all practice structures from Wade & Solomons", status: "completed", priority: "urgent", category: "Chemistry", dueDate: "2026-03-05", completed: true },
+      { id: "u-t-2", title: "Reaction Kinetics & Rate Law Equations Arrhenius Plot", description: "Calculate activation energy Ea from slope = -Ea/R", status: "completed", priority: "high", category: "Chemistry", dueDate: "2026-03-09", completed: true },
+      { id: "u-t-3", title: "Electrochemistry: Galvanic Cells & Nernst Equation", description: "Solve cell potential E = E0 - (0.0591/n) log Q problems", status: "todo", priority: "urgent", category: "Chemistry", dueDate: "2026-03-23", completed: false },
+    ],
+    files: [
+      { id: "u-f-1", name: "Organic_Chemistry_Mechanisms_Summary.pdf", size: 1024 * 188, mimeType: "application/pdf", category: "pdf", tags: ["Chemistry", "MDCAT"], uploadDate: "1 day ago", contentSnippet: "SN1, SN2, E1, and E2 elimination pathways with stereochemistry.", isEncrypted: false },
+    ],
+    calendar: [],
+    downloaded_pdf_ids: ["pdf-chem-11-01", "pdf-chem-11-02", "pdf-chem-12-01", "pdf-chem-12-02", "pdf-phys-12-01"],
+    games_profile: { level: 6, xp: 1850, xpToNextLevel: 2100, title: "MDCAT Chemistry Prodigy", totalGamesPlayed: 35, totalCorrect: 110, highestStreak: 18, soundEnabled: true, badges: [], history: [] },
+    study_streak: 14,
+  },
+};
+
 function loadServerUserStates(): Record<string, any> {
+  let states: Record<string, any> = {};
   try {
     if (fs.existsSync(USER_STATES_FILE)) {
       const raw = fs.readFileSync(USER_STATES_FILE, "utf-8");
-      return JSON.parse(raw) || {};
+      states = JSON.parse(raw) || {};
     }
   } catch (e) {
     console.warn("Error reading user states file:", e);
+    states = {};
   }
-  return {};
+
+  // Hydrate missing states for active default/seeded users without overwriting saved states
+  const activeUsers = loadServerUsers();
+  let changed = false;
+  for (const [uid, defaultState] of Object.entries(DEFAULT_SERVER_USER_STATES)) {
+    if (activeUsers.some((u) => u.id === uid) && !states[uid]) {
+      states[uid] = normalizeUserState({ ...defaultState, lastUpdated: Date.now() });
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveServerUserStates(states);
+  }
+  return states;
 }
 
 function saveServerUserStates(states: Record<string, any>): void {
@@ -5009,11 +5225,281 @@ function saveServerUserStates(states: Record<string, any>): void {
   }
 }
 
+interface ServerAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  type: "urgent" | "info" | "sync" | "security" | "reminder";
+  targetGrade: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+interface ServerAuditLog {
+  id: string;
+  timestamp: string;
+  category: "auth" | "admin" | "user" | "system";
+  action: string;
+  actor: string;
+  target?: string;
+  details: string;
+  status: "success" | "warning" | "error";
+}
+
+interface ServerPlatformSettings {
+  platformName: string;
+  supportEmail: string;
+  allowPublicSignup: boolean;
+  aiTutorEnabled: boolean;
+  adPlacementsEnabled: boolean;
+  defaultDailyGoalHours: number;
+  maintenanceBanner: string;
+  updatedAt: string;
+}
+
+const DEFAULT_PLATFORM_SETTINGS: ServerPlatformSettings = {
+  platformName: "PRO Study Mind v2.0",
+  supportEmail: "dandanish2332@gmail.com",
+  allowPublicSignup: true,
+  aiTutorEnabled: true,
+  adPlacementsEnabled: true,
+  defaultDailyGoalHours: 4,
+  maintenanceBanner: "",
+  updatedAt: new Date().toISOString(),
+};
+
+function loadAnnouncements(): ServerAnnouncement[] {
+  try {
+    if (fs.existsSync(ANNOUNCEMENTS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(ANNOUNCEMENTS_FILE, "utf-8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return [];
+}
+
+function saveAnnouncements(list: ServerAnnouncement[]): void {
+  try {
+    fs.writeFileSync(ANNOUNCEMENTS_FILE, JSON.stringify(list, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Error saving announcements file:", e);
+  }
+}
+
+function loadAuditLogs(): ServerAuditLog[] {
+  try {
+    if (fs.existsSync(AUDIT_LOGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(AUDIT_LOGS_FILE, "utf-8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return [];
+}
+
+function saveAuditLogs(logs: ServerAuditLog[]): void {
+  try {
+    fs.writeFileSync(AUDIT_LOGS_FILE, JSON.stringify(logs.slice(0, 300), null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Error saving audit logs file:", e);
+  }
+}
+
+function recordAuditLog(entry: Omit<ServerAuditLog, "id" | "timestamp">): ServerAuditLog {
+  const logs = loadAuditLogs();
+  const item: ServerAuditLog = {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  logs.unshift(item);
+  saveAuditLogs(logs);
+  return item;
+}
+
+interface ServerEmailLog {
+  id: string;
+  timestamp: string;
+  direction: "outbound" | "inbound_sync";
+  actor: string;
+  to: string;
+  from?: string;
+  subject: string;
+  snippet?: string;
+  gmailMessageId?: string;
+  status: "sent" | "synced" | "failed";
+  error?: string;
+}
+
+interface ServerActivityLog {
+  id: string;
+  timestamp: string;
+  userId: string;
+  userEmail: string;
+  userName?: string;
+  feature: string;
+  action: string;
+  details: string;
+  metadata?: Record<string, any>;
+}
+
+function loadEmailLogs(): ServerEmailLog[] {
+  try {
+    if (fs.existsSync(EMAIL_LOGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(EMAIL_LOGS_FILE, "utf-8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveEmailLogs(logs: ServerEmailLog[]): void {
+  try {
+    fs.writeFileSync(EMAIL_LOGS_FILE, JSON.stringify(logs.slice(0, 300), null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Error saving email logs file:", e);
+  }
+}
+
+function recordEmailLog(entry: Omit<ServerEmailLog, "id" | "timestamp">): ServerEmailLog {
+  const logs = loadEmailLogs();
+  const item: ServerEmailLog = {
+    id: `eml-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  logs.unshift(item);
+  saveEmailLogs(logs);
+  return item;
+}
+
+function loadActivityLogs(): ServerActivityLog[] {
+  try {
+    if (fs.existsSync(ACTIVITY_LOGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(ACTIVITY_LOGS_FILE, "utf-8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveActivityLogs(logs: ServerActivityLog[]): void {
+  try {
+    fs.writeFileSync(ACTIVITY_LOGS_FILE, JSON.stringify(logs.slice(0, 500), null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Error saving activity logs file:", e);
+  }
+}
+
+function recordActivityLog(entry: Omit<ServerActivityLog, "id" | "timestamp">): ServerActivityLog {
+  const logs = loadActivityLogs();
+  const item: ServerActivityLog = {
+    id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  logs.unshift(item);
+  saveActivityLogs(logs);
+  return item;
+}
+
+function loadPlatformSettings(): ServerPlatformSettings {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_PLATFORM_SETTINGS, ...parsed };
+      }
+    }
+  } catch (e) {}
+  savePlatformSettings(DEFAULT_PLATFORM_SETTINGS);
+  return DEFAULT_PLATFORM_SETTINGS;
+}
+
+function savePlatformSettings(settings: ServerPlatformSettings): void {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Error saving platform settings file:", e);
+  }
+}
+
+function loadDeletedUserIds(): string[] {
+  try {
+    if (fs.existsSync(DELETED_USERS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DELETED_USERS_FILE, "utf-8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveDeletedUserIds(ids: string[]): void {
+  try {
+    fs.writeFileSync(DELETED_USERS_FILE, JSON.stringify(Array.from(new Set(ids)), null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Error saving deleted users file:", e);
+  }
+}
+
+function pickBestGameProfile(a: any, b: any) {
+  if (!a && !b) {
+    return {
+      level: 1,
+      xp: 0,
+      xpToNextLevel: 300,
+      title: "Novice Scholar",
+      totalGamesPlayed: 0,
+      totalCorrect: 0,
+      highestStreak: 0,
+      soundEnabled: true,
+      badges: [],
+      history: [],
+    };
+  }
+  if (!a) return b;
+  if (!b) return a;
+  const aScore = Number(a.xp || 0) + Number(a.totalGamesPlayed || 0) * 10;
+  const bScore = Number(b.xp || 0) + Number(b.totalGamesPlayed || 0) * 10;
+  const primary = bScore > aScore ? b : a;
+  const secondary = primary === b ? a : b;
+  return {
+    ...secondary,
+    ...primary,
+    badges: Array.isArray(primary.badges) && primary.badges.length > 0 ? primary.badges : secondary.badges || [],
+    history: Array.isArray(primary.history) && primary.history.length > 0 ? primary.history : secondary.history || [],
+  };
+}
+
+function normalizeUserState(raw: any = {}) {
+  const unifiedGameProfile = pickBestGameProfile(raw.games_profile, raw.game_profile);
+  return {
+    ...raw,
+    tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
+    files: Array.isArray(raw.files) ? raw.files : [],
+    calendar: Array.isArray(raw.calendar) ? raw.calendar : [],
+    downloaded_pdf_ids: Array.isArray(raw.downloaded_pdf_ids) ? raw.downloaded_pdf_ids : [],
+    custom_pdfs: Array.isArray(raw.custom_pdfs) ? raw.custom_pdfs : [],
+    saved_lectures: Array.isArray(raw.saved_lectures) ? raw.saved_lectures : [],
+    watched_lectures: Array.isArray(raw.watched_lectures) ? raw.watched_lectures : [],
+    dict_bookmarks: Array.isArray(raw.dict_bookmarks) ? raw.dict_bookmarks : [],
+    dict_recents: Array.isArray(raw.dict_recents) ? raw.dict_recents : [],
+    dict_custom_words: Array.isArray(raw.dict_custom_words) ? raw.dict_custom_words : [],
+    games_profile: unifiedGameProfile,
+    game_profile: unifiedGameProfile,
+    study_streak: typeof raw.study_streak === "number" ? raw.study_streak : Number(raw.study_streak || 0),
+    quiz_history: Array.isArray(raw.quiz_history) ? raw.quiz_history : [],
+    notifications: Array.isArray(raw.notifications) ? raw.notifications : [],
+    voice_history: Array.isArray(raw.voice_history) ? raw.voice_history : [],
+    chat_history: Array.isArray(raw.chat_history) ? raw.chat_history : [],
+  };
+}
+
 // 1. GET ALL USERS (Admin / Platform Sync)
 app.get("/api/users/all", (_req, res) => {
   const users = loadServerUsers();
   const states = loadServerUserStates();
-  return res.json({ success: true, users, states });
+  const deletedUserIds = loadDeletedUserIds();
+  return res.json({ success: true, users, states, deletedUserIds });
 });
 
 // 2. BIDIRECTIONAL SYNC (Merges local storage with server storage)
@@ -5022,22 +5508,21 @@ app.post("/api/users/sync", (req, res) => {
     const { localUsers, userState } = req.body || {};
     let serverUsers = loadServerUsers();
     let serverStates = loadServerUserStates();
+    const deletedIds = new Set(loadDeletedUserIds());
     let usersUpdated = false;
     let statesUpdated = false;
 
-    // Merge any new users from client into server
+    // Merge any new users from client into server (never resurrect deleted users)
     if (Array.isArray(localUsers)) {
       for (const lu of localUsers) {
-        if (!lu || !lu.id) continue;
+        if (!lu || !lu.id || deletedIds.has(lu.id)) continue;
         const existingIdx = serverUsers.findIndex(
           (su) => su.id === lu.id || su.email.toLowerCase() === lu.email?.toLowerCase()
         );
         if (existingIdx === -1) {
-          // New user created on another client
           serverUsers.push(lu);
           usersUpdated = true;
         } else {
-          // Update timestamp or progress if local is more recent
           const currentTimestamp = serverUsers[existingIdx].lastActiveTimestamp || 0;
           const localTimestamp = lu.lastActiveTimestamp || 0;
           if (localTimestamp > currentTimestamp) {
@@ -5052,13 +5537,14 @@ app.post("/api/users/sync", (req, res) => {
       }
     }
 
-    // Merge userState if provided
-    if (userState && userState.userId && userState.state) {
-      serverStates[userState.userId] = {
+    // Merge userState if provided (skip deleted users)
+    if (userState && userState.userId && userState.state && !deletedIds.has(userState.userId)) {
+      const mergedRaw = {
         ...(serverStates[userState.userId] || {}),
         ...userState.state,
         lastUpdated: Date.now(),
       };
+      serverStates[userState.userId] = normalizeUserState(mergedRaw);
       statesUpdated = true;
     }
 
@@ -5073,6 +5559,7 @@ app.post("/api/users/sync", (req, res) => {
       success: true,
       users: serverUsers,
       userStates: serverStates,
+      deletedUserIds: Array.from(deletedIds),
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Sync failed" });
@@ -5097,8 +5584,20 @@ app.post("/api/users/register", (req, res) => {
       return res.status(409).json({ success: false, error: "An account with this email/ID already exists" });
     }
 
-    serverUsers.push(newUser);
+    serverUsers.push({ ...newUser, email: cleanEmail });
     saveServerUsers(serverUsers);
+
+    const deletedIds = loadDeletedUserIds().filter((d) => d !== newUser.id);
+    saveDeletedUserIds(deletedIds);
+
+    recordAuditLog({
+      category: "auth",
+      action: "USER_REGISTERED",
+      actor: cleanEmail,
+      target: newUser.name,
+      details: `Registered new student profile (${newUser.grade})`,
+      status: "success",
+    });
 
     return res.json({ success: true, user: newUser, allUsers: serverUsers });
   } catch (err: any) {
@@ -5120,13 +5619,43 @@ app.post("/api/users/update", (req, res) => {
       return res.status(404).json({ success: false, error: "User not found" });
     }
 
+    const sanitizedUpdates = { ...updates };
+    if (typeof sanitizedUpdates.email === "string" && sanitizedUpdates.email.trim()) {
+      const normalizedEmail = sanitizedUpdates.email.trim().toLowerCase();
+      const duplicate = serverUsers.find(
+        (u) => u.id !== userId && u.email.toLowerCase() === normalizedEmail
+      );
+      if (duplicate) {
+        return res.status(409).json({
+          success: false,
+          error: "This email/username is already assigned to another user.",
+        });
+      }
+      sanitizedUpdates.email = normalizedEmail;
+    }
+
+    if (typeof updates.password === "string" && updates.password.trim()) {
+      sanitizedUpdates.passwordHash = updates.password.trim();
+      delete sanitizedUpdates.password;
+    }
+
     serverUsers[idx] = {
       ...serverUsers[idx],
-      ...updates,
+      ...sanitizedUpdates,
+      ...(userId === "admin0011" ? { role: "admin", isAdmin: true } : {}),
       lastActiveTimestamp: Date.now(),
     };
 
     saveServerUsers(serverUsers);
+    recordAuditLog({
+      category: "admin",
+      action: "USER_UPDATED",
+      actor: "admin0011",
+      target: serverUsers[idx].email,
+      details: `Updated profile fields (${Object.keys(sanitizedUpdates).join(", ")})`,
+      status: "success",
+    });
+
     return res.json({ success: true, user: serverUsers[idx], allUsers: serverUsers });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Update failed" });
@@ -5145,6 +5674,7 @@ app.post("/api/users/delete", (req, res) => {
     }
 
     let serverUsers = loadServerUsers();
+    const deletedUser = serverUsers.find((u) => u.id === userId);
     serverUsers = serverUsers.filter((u) => u.id !== userId);
     saveServerUsers(serverUsers);
 
@@ -5154,13 +5684,26 @@ app.post("/api/users/delete", (req, res) => {
       saveServerUserStates(serverStates);
     }
 
-    return res.json({ success: true, allUsers: serverUsers });
+    const deletedIds = loadDeletedUserIds();
+    deletedIds.push(userId);
+    saveDeletedUserIds(deletedIds);
+
+    recordAuditLog({
+      category: "admin",
+      action: "USER_DELETED",
+      actor: "admin0011",
+      target: deletedUser?.email || userId,
+      details: `Removed student account and isolated storage (${deletedUser?.name || userId})`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, allUsers: serverUsers, deletedUserIds: Array.from(new Set(deletedIds)) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Delete failed" });
   }
 });
 
-// 6. SAVE STUDENT ISOLATED STATE (Tasks, Calendar, Files, Notes, XP)
+// 6. SAVE STUDENT ISOLATED STATE (Tasks, Calendar, Files, Notes, Lectures, Dictionary, XP, Chat, Voice, Notifications)
 app.post("/api/users/save-state", (req, res) => {
   try {
     const { userId, state } = req.body || {};
@@ -5169,14 +5712,15 @@ app.post("/api/users/save-state", (req, res) => {
     }
 
     const serverStates = loadServerUserStates();
-    serverStates[userId] = {
+    const mergedRaw = {
       ...(serverStates[userId] || {}),
       ...state,
       lastUpdated: Date.now(),
     };
+    serverStates[userId] = normalizeUserState(mergedRaw);
     saveServerUserStates(serverStates);
 
-    return res.json({ success: true });
+    return res.json({ success: true, state: serverStates[userId] });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Failed to save user state" });
   }
@@ -5201,11 +5745,1490 @@ app.post("/api/users/heartbeat", (req, res) => {
   }
 });
 
+// 8. LOGIN AUDIT EVENT
+app.post("/api/users/login-audit", (req, res) => {
+  try {
+    const { email, role, success: loginSuccess, provider = "email" } = req.body || {};
+    recordAuditLog({
+      category: "auth",
+      action: loginSuccess ? "USER_LOGIN" : "LOGIN_FAILED",
+      actor: String(email || "unknown"),
+      details: loginSuccess
+        ? `Authenticated ${role === "admin" ? "Master Admin" : "Student"} session via ${provider}`
+        : `Failed authentication attempt (${provider})`,
+      status: loginSuccess ? "success" : "warning",
+    });
+    return res.json({ success: true });
+  } catch (e) {
+    return res.json({ success: false });
+  }
+});
+
+// 9. GOOGLE SIGN-IN ACCOUNT MATCH OR AUTO-REGISTER
+app.post("/api/users/google-auth", (req, res) => {
+  try {
+    const { email, name, avatarUrl, uid } = req.body || {};
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!cleanEmail) {
+      return res.status(400).json({ success: false, error: "Google email is required" });
+    }
+
+    const serverUsers = loadServerUsers();
+    const isAdminEmail = cleanEmail === "dandanish2332@gmail.com";
+    let idx = serverUsers.findIndex(
+      (u) => u.email.toLowerCase() === cleanEmail || (isAdminEmail && u.id === "admin0011")
+    );
+
+    const nowIso = new Date().toISOString();
+    let user: ServerStoredUser;
+
+    if (idx !== -1) {
+      user = {
+        ...serverUsers[idx],
+        name: serverUsers[idx].name || String(name || cleanEmail.split("@")[0]),
+        avatarUrl: avatarUrl || serverUsers[idx].avatarUrl,
+        lastLogin: nowIso,
+        lastActiveTimestamp: Date.now(),
+        ...(isAdminEmail ? { role: "admin", isAdmin: true } : {}),
+      };
+      serverUsers[idx] = user;
+    } else {
+      user = {
+        id: uid ? `usr-g-${String(uid).slice(0, 12)}` : `usr-g-${Date.now()}`,
+        name: String(name || cleanEmail.split("@")[0]),
+        email: cleanEmail,
+        passwordHash: `google_oauth_${Date.now().toString(36)}`,
+        grade: "11th Class",
+        targetExam: "Annual Board Examinations 2026",
+        avatarColor: "from-indigo-500 to-purple-600",
+        avatarUrl: avatarUrl || undefined,
+        provider: "google",
+        joinedDate: nowIso.split("T")[0],
+        lastLogin: nowIso,
+        lastActiveTimestamp: Date.now(),
+        role: isAdminEmail ? "admin" : "student",
+        isAdmin: isAdminEmail,
+      };
+      serverUsers.push(user);
+    }
+
+    saveServerUsers(serverUsers);
+    const deletedIds = loadDeletedUserIds().filter((d) => d !== user.id);
+    saveDeletedUserIds(deletedIds);
+
+    recordAuditLog({
+      category: "auth",
+      action: "GOOGLE_SIGNIN",
+      actor: cleanEmail,
+      target: user.name,
+      details: `Signed in with Google Workspace OAuth (${user.role || "student"})`,
+      status: "success",
+    });
+
+    recordActivityLog({
+      userId: user.id,
+      userEmail: cleanEmail,
+      userName: user.name,
+      feature: "auth",
+      action: "GOOGLE_SIGNIN",
+      details: `Authenticated via Google Sign-In (${user.role || "student"})`,
+    });
+
+    const states = loadServerUserStates();
+    const state = normalizeUserState(states[user.id] || {});
+    return res.json({ success: true, user, state, allUsers: serverUsers });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Google sign-in sync failed" });
+  }
+});
+
+// ============================================================================
+// BACKEND GOVERNANCE, ANNOUNCEMENTS, TELEMETRY & MASTER ADMIN ENDPOINTS
+// ============================================================================
+
+// Platform Settings (Public Read for App Behavior, Admin Write)
+app.get("/api/platform-settings", (_req, res) => {
+  const settings = loadPlatformSettings();
+  return res.json({ success: true, settings });
+});
+
+app.post("/api/admin/platform-settings", (req, res) => {
+  try {
+    const current = loadPlatformSettings();
+    const incoming = req.body || {};
+    const next: ServerPlatformSettings = {
+      platformName:
+        typeof incoming.platformName === "string" && incoming.platformName.trim()
+          ? incoming.platformName.trim()
+          : current.platformName,
+      supportEmail:
+        typeof incoming.supportEmail === "string" && incoming.supportEmail.trim()
+          ? incoming.supportEmail.trim()
+          : current.supportEmail,
+      allowPublicSignup:
+        typeof incoming.allowPublicSignup === "boolean"
+          ? incoming.allowPublicSignup
+          : current.allowPublicSignup,
+      aiTutorEnabled:
+        typeof incoming.aiTutorEnabled === "boolean" ? incoming.aiTutorEnabled : current.aiTutorEnabled,
+      adPlacementsEnabled:
+        typeof incoming.adPlacementsEnabled === "boolean"
+          ? incoming.adPlacementsEnabled
+          : current.adPlacementsEnabled,
+      defaultDailyGoalHours:
+        typeof incoming.defaultDailyGoalHours === "number"
+          ? Math.max(1, Math.min(16, incoming.defaultDailyGoalHours))
+          : current.defaultDailyGoalHours,
+      maintenanceBanner:
+        typeof incoming.maintenanceBanner === "string"
+          ? incoming.maintenanceBanner.trim()
+          : current.maintenanceBanner,
+      updatedAt: new Date().toISOString(),
+    };
+    savePlatformSettings(next);
+    recordAuditLog({
+      category: "system",
+      action: "PLATFORM_SETTINGS_UPDATED",
+      actor: "admin0011",
+      details: `Updated platform config (PublicSignup=${next.allowPublicSignup}, AI=${next.aiTutorEnabled}, Ads=${next.adPlacementsEnabled})`,
+      status: "success",
+    });
+    return res.json({ success: true, settings: next });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to save platform settings" });
+  }
+});
+
+// Announcements / Broadcasts (Public Read for Students, Admin Create/Delete)
+app.get("/api/announcements", (_req, res) => {
+  const announcements = loadAnnouncements();
+  return res.json({ success: true, announcements });
+});
+
+app.post("/api/admin/announcements", (req, res) => {
+  try {
+    const { title, message, type = "urgent", targetGrade = "All Levels", createdBy = "Danish (Master Admin)" } =
+      req.body || {};
+    if (!title?.trim() || !message?.trim()) {
+      return res.status(400).json({ success: false, error: "Title and message are required" });
+    }
+    const list = loadAnnouncements();
+    const item: ServerAnnouncement = {
+      id: `ann-${Date.now()}`,
+      title: title.trim(),
+      message: message.trim(),
+      type,
+      targetGrade,
+      createdBy,
+      createdAt: new Date().toISOString(),
+    };
+    list.unshift(item);
+    saveAnnouncements(list.slice(0, 100));
+
+    recordAuditLog({
+      category: "admin",
+      action: "BROADCAST_PUBLISHED",
+      actor: "admin0011",
+      target: targetGrade,
+      details: `Published broadcast "${item.title}" (${item.type})`,
+      status: "success",
+    });
+
+    return res.json({ success: true, announcement: item, announcements: list.slice(0, 100) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to publish announcement" });
+  }
+});
+
+app.delete("/api/admin/announcements/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const list = loadAnnouncements();
+    const target = list.find((a) => a.id === id);
+    const filtered = list.filter((a) => a.id !== id);
+    saveAnnouncements(filtered);
+
+    if (target) {
+      recordAuditLog({
+        category: "admin",
+        action: "BROADCAST_DELETED",
+        actor: "admin0011",
+        target: target.title,
+        details: `Deleted announcement "${target.title}"`,
+        status: "warning",
+      });
+    }
+
+    return res.json({ success: true, announcements: filtered });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to delete announcement" });
+  }
+});
+
+// Direct Server-Side User Complete Dossier Read & Admin Operations
+app.get("/api/admin/users/:id/full-details", (req, res) => {
+  try {
+    const { id } = req.params;
+    const users = loadServerUsers();
+    const user = users.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User account not found on server" });
+    }
+    const serverStates = loadServerUserStates();
+    const state = normalizeUserState(serverStates[id] || {});
+    return res.json({ success: true, user, state });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to fetch full user details" });
+  }
+});
+
+app.post("/api/admin/users/:id/grant-xp", (req, res) => {
+  try {
+    const { id } = req.params;
+    const xpAmount = Number(req.body?.xpAmount || 0);
+    if (!id || Number.isNaN(xpAmount)) {
+      return res.status(400).json({ success: false, error: "Invalid userId or xpAmount" });
+    }
+    const serverStates = loadServerUserStates();
+    const userState = normalizeUserState(serverStates[id] || {});
+    const profile = userState.games_profile;
+    const nextXp = Math.max(0, (profile.xp || 0) + xpAmount);
+    const nextLevel = Math.max(1, Math.floor(nextXp / 300) + 1);
+    const updatedProfile = {
+      ...profile,
+      xp: nextXp,
+      level: nextLevel,
+      xpToNextLevel: nextLevel * 300,
+    };
+    serverStates[id] = {
+      ...userState,
+      games_profile: updatedProfile,
+      game_profile: updatedProfile,
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "GRANT_XP",
+      actor: "admin0011",
+      target: id,
+      details: `Adjusted XP by ${xpAmount >= 0 ? `+${xpAmount}` : xpAmount} (New total: ${nextXp} XP, Lvl ${nextLevel})`,
+      status: "success",
+    });
+
+    return res.json({ success: true, gameProfile: updatedProfile });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to update XP" });
+  }
+});
+
+app.patch("/api/admin/users/:id/study-stats", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { studyStreak, xp, level, title, clearKey } = req.body || {};
+    const serverStates = loadServerUserStates();
+    const userState = normalizeUserState(serverStates[id] || {});
+
+    if (typeof studyStreak === "number" && !Number.isNaN(studyStreak)) {
+      userState.study_streak = Math.max(0, Math.floor(studyStreak));
+    }
+
+    const nextProfile = { ...userState.games_profile };
+    let profileChanged = false;
+    if (typeof xp === "number" && !Number.isNaN(xp)) {
+      nextProfile.xp = Math.max(0, Math.floor(xp));
+      nextProfile.level = Math.max(1, Math.floor(nextProfile.xp / 300) + 1);
+      nextProfile.xpToNextLevel = nextProfile.level * 300;
+      profileChanged = true;
+    }
+    if (typeof level === "number" && !Number.isNaN(level)) {
+      nextProfile.level = Math.max(1, Math.floor(level));
+      nextProfile.xpToNextLevel = nextProfile.level * 300;
+      profileChanged = true;
+    }
+    if (typeof title === "string" && title.trim()) {
+      nextProfile.title = title.trim();
+      profileChanged = true;
+    }
+    if (profileChanged) {
+      userState.games_profile = nextProfile;
+      userState.game_profile = nextProfile;
+    }
+
+    const clearableArrayKeys = [
+      "quiz_history",
+      "voice_history",
+      "chat_history",
+      "notifications",
+      "custom_pdfs",
+      "downloaded_pdf_ids",
+      "saved_lectures",
+      "watched_lectures",
+      "dict_bookmarks",
+      "dict_recents",
+      "dict_custom_words",
+    ];
+    if (typeof clearKey === "string" && clearableArrayKeys.includes(clearKey)) {
+      userState[clearKey] = [];
+    }
+
+    userState.lastUpdated = Date.now();
+    serverStates[id] = userState;
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: clearKey ? "CLEAR_USER_DATA_SLICE" : "UPDATE_STUDY_STATS",
+      actor: "admin0011",
+      target: id,
+      details: clearKey
+        ? `Cleared ${clearKey} for user ${id}`
+        : `Updated study stats (Streak: ${userState.study_streak}d, XP: ${userState.games_profile.xp}, Lvl ${userState.games_profile.level})`,
+      status: clearKey ? "warning" : "success",
+    });
+
+    return res.json({ success: true, state: userState });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to update study stats" });
+  }
+});
+
+app.post("/api/admin/users/:id/notify", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, message, type = "info" } = req.body || {};
+    if (!title?.trim() || !message?.trim()) {
+      return res.status(400).json({ success: false, error: "Notification title and message are required" });
+    }
+    const serverStates = loadServerUserStates();
+    const userState = normalizeUserState(serverStates[id] || {});
+    const newNotif = {
+      id: `n-adm-${Date.now()}`,
+      title: title.trim(),
+      message: message.trim(),
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      type,
+      read: false,
+    };
+    userState.notifications = [newNotif, ...userState.notifications];
+    userState.lastUpdated = Date.now();
+    serverStates[id] = userState;
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "DIRECT_NOTIFY_USER",
+      actor: "admin0011",
+      target: id,
+      details: `Sent direct notification "${newNotif.title}"`,
+      status: "success",
+    });
+
+    return res.json({ success: true, notification: newNotif, notifications: userState.notifications });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to send notification" });
+  }
+});
+
+app.delete("/api/admin/users/:id/files/:fileId", (req, res) => {
+  try {
+    const { id, fileId } = req.params;
+    const serverStates = loadServerUserStates();
+    const userState = normalizeUserState(serverStates[id] || {});
+    const removed = userState.files.find((f: any) => f.id === fileId);
+    userState.files = userState.files.filter((f: any) => f.id !== fileId);
+    userState.lastUpdated = Date.now();
+    serverStates[id] = userState;
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "DELETE_USER_FILE",
+      actor: "admin0011",
+      target: id,
+      details: `Removed file "${removed?.name || fileId}" from student vault`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, files: userState.files });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to delete student file" });
+  }
+});
+
+app.delete("/api/admin/users/:id/notes/:pdfId", (req, res) => {
+  try {
+    const { id, pdfId } = req.params;
+    const kind = String(req.query?.kind || "downloaded");
+    const serverStates = loadServerUserStates();
+    const userState = normalizeUserState(serverStates[id] || {});
+    if (kind === "custom") {
+      userState.custom_pdfs = userState.custom_pdfs.filter((p: any) => p.id !== pdfId);
+    } else {
+      userState.downloaded_pdf_ids = userState.downloaded_pdf_ids.filter((pid: string) => pid !== pdfId);
+    }
+    userState.lastUpdated = Date.now();
+    serverStates[id] = userState;
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "DELETE_USER_NOTE",
+      actor: "admin0011",
+      target: id,
+      details: `Removed ${kind} note record "${pdfId}"`,
+      status: "warning",
+    });
+
+    return res.json({
+      success: true,
+      downloadedPdfs: userState.downloaded_pdf_ids,
+      customPdfs: userState.custom_pdfs,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to remove note record" });
+  }
+});
+
+app.post("/api/admin/users/:id/tasks", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description = "", category = "General Study", priority = "high", dueDate } = req.body || {};
+    if (!title?.trim()) {
+      return res.status(400).json({ success: false, error: "Task title is required" });
+    }
+    const serverStates = loadServerUserStates();
+    const userState = serverStates[id] || {};
+    const currentTasks = Array.isArray(userState.tasks) ? userState.tasks : [];
+    const newTask = {
+      id: `t-${Date.now()}`,
+      title: title.trim(),
+      description,
+      category,
+      priority,
+      status: "todo",
+      dueDate: dueDate || new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0],
+      completed: false,
+    };
+    serverStates[id] = {
+      ...userState,
+      tasks: [newTask, ...currentTasks],
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "ASSIGN_TASK",
+      actor: "admin0011",
+      target: id,
+      details: `Assigned task "${newTask.title}" (${newTask.priority})`,
+      status: "success",
+    });
+
+    return res.json({ success: true, task: newTask, tasks: serverStates[id].tasks });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to assign task" });
+  }
+});
+
+app.patch("/api/admin/users/:id/tasks/:taskId/toggle", (req, res) => {
+  try {
+    const { id, taskId } = req.params;
+    const serverStates = loadServerUserStates();
+    const userState = serverStates[id] || {};
+    const currentTasks = Array.isArray(userState.tasks) ? userState.tasks : [];
+    const updatedTasks = currentTasks.map((t: any) => {
+      if (t.id === taskId) {
+        const nextCompleted = !(t.status === "completed" || t.completed);
+        return {
+          ...t,
+          status: nextCompleted ? "completed" : "todo",
+          completed: nextCompleted,
+          completedAt: nextCompleted ? new Date().toISOString() : undefined,
+        };
+      }
+      return t;
+    });
+    serverStates[id] = {
+      ...userState,
+      tasks: updatedTasks,
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "TOGGLE_TASK",
+      actor: "admin0011",
+      target: id,
+      details: `Toggled task completion status (${taskId})`,
+      status: "success",
+    });
+
+    return res.json({ success: true, tasks: updatedTasks });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to toggle task" });
+  }
+});
+
+app.delete("/api/admin/users/:id/tasks/:taskId", (req, res) => {
+  try {
+    const { id, taskId } = req.params;
+    const serverStates = loadServerUserStates();
+    const userState = serverStates[id] || {};
+    const currentTasks = Array.isArray(userState.tasks) ? userState.tasks : [];
+    const removed = currentTasks.find((t: any) => t.id === taskId);
+    const updatedTasks = currentTasks.filter((t: any) => t.id !== taskId);
+    serverStates[id] = {
+      ...userState,
+      tasks: updatedTasks,
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "DELETE_TASK",
+      actor: "admin0011",
+      target: id,
+      details: `Removed task "${removed?.title || taskId}"`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, tasks: updatedTasks });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to delete task" });
+  }
+});
+
+app.post("/api/admin/users/:id/calendar", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description = "", startTime, endTime, category = "work" } = req.body || {};
+    if (!title?.trim()) {
+      return res.status(400).json({ success: false, error: "Event title is required" });
+    }
+    const serverStates = loadServerUserStates();
+    const userState = serverStates[id] || {};
+    const currentEvents = Array.isArray(userState.calendar) ? userState.calendar : [];
+    const startIso = startTime || new Date(Date.now() + 86400000).toISOString();
+    const endIso = endTime || new Date(new Date(startIso).getTime() + 3600000).toISOString();
+    const newEvent = {
+      id: `c-adm-${Date.now()}`,
+      title: title.trim(),
+      description: description || "Scheduled by Master Administrator",
+      startTime: startIso,
+      endTime: endIso,
+      category,
+      source: "OmniSync",
+      synced: true,
+    };
+    serverStates[id] = {
+      ...userState,
+      calendar: [...currentEvents, newEvent],
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "SCHEDULE_EVENT",
+      actor: "admin0011",
+      target: id,
+      details: `Scheduled calendar event "${newEvent.title}"`,
+      status: "success",
+    });
+
+    return res.json({ success: true, event: newEvent, calendar: serverStates[id].calendar });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to schedule event" });
+  }
+});
+
+app.delete("/api/admin/users/:id/calendar/:eventId", (req, res) => {
+  try {
+    const { id, eventId } = req.params;
+    const serverStates = loadServerUserStates();
+    const userState = serverStates[id] || {};
+    const currentEvents = Array.isArray(userState.calendar) ? userState.calendar : [];
+    const removed = currentEvents.find((e: any) => e.id === eventId);
+    const updatedEvents = currentEvents.filter((e: any) => e.id !== eventId);
+    serverStates[id] = {
+      ...userState,
+      calendar: updatedEvents,
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "DELETE_EVENT",
+      actor: "admin0011",
+      target: id,
+      details: `Removed calendar event "${removed?.title || eventId}"`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, calendar: updatedEvents });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to delete event" });
+  }
+});
+
+app.post("/api/admin/users/:id/reset-state", (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id === "admin0011") {
+      return res.status(403).json({ success: false, error: "Cannot reset master administrator isolated state" });
+    }
+    const freshProfile = {
+      level: 1,
+      xp: 0,
+      xpToNextLevel: 300,
+      title: "Novice Scholar",
+      totalGamesPlayed: 0,
+      totalCorrect: 0,
+      highestStreak: 0,
+      soundEnabled: true,
+      badges: [],
+      history: [],
+    };
+    const serverStates = loadServerUserStates();
+    serverStates[id] = {
+      tasks: [],
+      files: [],
+      calendar: [],
+      downloaded_pdf_ids: [],
+      custom_pdfs: [],
+      saved_lectures: [],
+      watched_lectures: [],
+      dict_bookmarks: [],
+      dict_recents: [],
+      dict_custom_words: [],
+      games_profile: freshProfile,
+      game_profile: freshProfile,
+      study_streak: 0,
+      quiz_history: [],
+      notifications: [],
+      voice_history: [],
+      chat_history: [],
+      lastUpdated: Date.now(),
+    };
+    saveServerUserStates(serverStates);
+
+    recordAuditLog({
+      category: "admin",
+      action: "RESET_USER_STATE",
+      actor: "admin0011",
+      target: id,
+      details: `Reset isolated study state for user ${id}`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, state: serverStates[id] });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to reset user state" });
+  }
+});
+
+// Backend & System Overview Telemetry
+app.get("/api/admin/overview", (_req, res) => {
+  try {
+    const users = loadServerUsers();
+    const states = loadServerUserStates();
+    const announcements = loadAnnouncements();
+    const auditLogs = loadAuditLogs();
+    const settings = loadPlatformSettings();
+    const now = Date.now();
+
+    let onlineUsers = 0;
+    for (const u of users) {
+      const lastActive = u.lastActiveTimestamp || (u.lastLogin ? new Date(u.lastLogin).getTime() : 0);
+      if (lastActive > 0 && now - lastActive < 15 * 60 * 1000) {
+        onlineUsers += 1;
+      }
+    }
+
+    let totalTasks = 0;
+    let completedTasks = 0;
+    let totalFiles = 0;
+    let totalCalendarEvents = 0;
+    let totalQuizzes = 0;
+    let totalXp = 0;
+
+    for (const st of Object.values(states)) {
+      if (!st || typeof st !== "object") continue;
+      const tasks = Array.isArray(st.tasks) ? st.tasks : [];
+      totalTasks += tasks.length;
+      completedTasks += tasks.filter((t: any) => t.status === "completed" || t.completed).length;
+      totalFiles += Array.isArray(st.files) ? st.files.length : 0;
+      totalCalendarEvents += Array.isArray(st.calendar) ? st.calendar.length : 0;
+      totalQuizzes += Array.isArray(st.quiz_history) ? st.quiz_history.length : 0;
+      totalXp += Number(st.games_profile?.xp ?? st.game_profile?.xp ?? 0);
+    }
+
+    const storageFileList = [
+      { name: "users_db.json", filePath: USERS_FILE },
+      { name: "user_states.json", filePath: USER_STATES_FILE },
+      { name: "announcements.json", filePath: ANNOUNCEMENTS_FILE },
+      { name: "admin_logs.json", filePath: AUDIT_LOGS_FILE },
+      { name: "email_logs.json", filePath: EMAIL_LOGS_FILE },
+      { name: "activity_logs.json", filePath: ACTIVITY_LOGS_FILE },
+      { name: "platform_settings.json", filePath: SETTINGS_FILE },
+    ].map((f) => {
+      try {
+        return {
+          name: f.name,
+          bytes: fs.existsSync(f.filePath) ? fs.statSync(f.filePath).size : 0,
+        };
+      } catch {
+        return { name: f.name, bytes: 0 };
+      }
+    });
+
+    const activeCooldowns: Record<string, number> = {};
+    for (const [model, expiry] of Object.entries(modelCooldowns)) {
+      if (expiry > now) {
+        activeCooldowns[model] = Math.ceil((expiry - now) / 1000);
+      }
+    }
+
+    const topRoutes = Array.from(routeMetrics.entries())
+      .map(([route, m]) => ({
+        route,
+        hits: m.hits,
+        errors: m.errors,
+        avgLatencyMs: m.hits > 0 ? Math.round(m.totalLatencyMs / m.hits) : 0,
+        lastCalledAt: m.lastCalledAt,
+      }))
+      .sort((a, b) => b.hits - a.hits)
+      .slice(0, 12);
+
+    const mem = process.memoryUsage();
+
+    return res.json({
+      success: true,
+      overview: {
+        server: {
+          status: "healthy",
+          uptimeSeconds: Math.floor(process.uptime()),
+          startedAt: serverStartedAt,
+          nodeVersion: process.version,
+          platform: process.platform,
+          pid: process.pid,
+          memory: {
+            rssMb: Math.round((mem.rss / 1024 / 1024) * 10) / 10,
+            heapUsedMb: Math.round((mem.heapUsed / 1024 / 1024) * 10) / 10,
+            heapTotalMb: Math.round((mem.heapTotal / 1024 / 1024) * 10) / 10,
+          },
+        },
+        ai: {
+          geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+          activeCooldowns,
+          caches: {
+            quiz: quizCache.getStats(),
+            media: mediaCache.getStats(),
+            voice: voiceCache.getStats(),
+            chat: chatCache.getStats(),
+          },
+        },
+        traffic: {
+          totalApiRequests,
+          avgLatencyMs: totalApiRequests > 0 ? Math.round(totalApiLatencyMs / totalApiRequests) : 0,
+          topRoutes,
+          recentErrors: recentApiErrors,
+        },
+        database: {
+          totalUsers: users.length,
+          onlineUsers,
+          offlineUsers: Math.max(0, users.length - onlineUsers),
+          totalTasks,
+          completedTasks,
+          totalFiles,
+          totalCalendarEvents,
+          totalQuizzes,
+          totalXp,
+          announcementsCount: announcements.length,
+          auditLogsCount: auditLogs.length,
+          storageFiles: storageFileList,
+        },
+        settings,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to load overview" });
+  }
+});
+
+// Cache & Cooldown Controls
+app.post("/api/admin/cache/clear", (req, res) => {
+  try {
+    const target = String(req.body?.target || "all");
+    if (target === "quiz" || target === "all") quizCache.clear();
+    if (target === "media" || target === "all") mediaCache.clear();
+    if (target === "voice" || target === "all") voiceCache.clear();
+    if (target === "chat" || target === "all") chatCache.clear();
+    if (target === "cooldowns" || target === "all") {
+      for (const key of Object.keys(modelCooldowns)) {
+        delete modelCooldowns[key];
+      }
+    }
+
+    recordAuditLog({
+      category: "system",
+      action: "CACHE_CLEARED",
+      actor: "admin0011",
+      target,
+      details: `Flushed server cache target: ${target}`,
+      status: "success",
+    });
+
+    return res.json({
+      success: true,
+      caches: {
+        quiz: quizCache.getStats(),
+        media: mediaCache.getStats(),
+        voice: voiceCache.getStats(),
+        chat: chatCache.getStats(),
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Cache clear failed" });
+  }
+});
+
+// ============================================================================
+// 1P GOOGLE WORKSPACE GMAIL PROXY APIs (Bearer Token from Browser Client)
+// ============================================================================
+
+function extractBearerToken(req: express.Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.slice(7).trim();
+  return token || null;
+}
+
+function decodeBase64Url(data?: string): string {
+  if (!data) return "";
+  try {
+    const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+    return Buffer.from(normalized, "base64").toString("utf-8");
+  } catch {
+    return "";
+  }
+}
+
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractGmailBodyText(payload: any): string {
+  if (!payload) return "";
+  if (payload.mimeType === "text/plain" && payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+  if (Array.isArray(payload.parts)) {
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/plain" && part.body?.data) {
+        return decodeBase64Url(part.body.data);
+      }
+    }
+    for (const part of payload.parts) {
+      const nested = extractGmailBodyText(part);
+      if (nested) return nested;
+    }
+  }
+  if (payload.mimeType === "text/html" && payload.body?.data) {
+    return stripHtmlTags(decodeBase64Url(payload.body.data));
+  }
+  if (payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+  return "";
+}
+
+function encodeRfc2822Mime(params: { to: string; subject: string; body: string; from?: string }): string {
+  const safeTo = params.to.replace(/[\r\n]+/g, "").trim();
+  const safeSubject = params.subject.replace(/[\r\n]+/g, " ").trim();
+  const headers = [
+    ...(params.from ? [`From: ${params.from.replace(/[\r\n]+/g, "").trim()}`] : []),
+    `To: ${safeTo}`,
+    `Subject: =?UTF-8?B?${Buffer.from(safeSubject, "utf-8").toString("base64")}?=`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+  ];
+  const encodedBody = Buffer.from(params.body, "utf-8").toString("base64");
+  const raw = `${headers.join("\r\n")}\r\n\r\n${encodedBody}`;
+  return Buffer.from(raw, "utf-8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+// 1. GET Gmail Connected Profile
+app.get("/api/gmail/profile", async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Missing Google OAuth Bearer token" });
+  }
+  try {
+    const gRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await gRes.json();
+    if (!gRes.ok) {
+      return res.status(gRes.status).json({
+        success: false,
+        error: data?.error?.message || "Failed to fetch Gmail profile",
+      });
+    }
+    return res.json({ success: true, profile: data });
+  } catch (err: any) {
+    return res.status(502).json({ success: false, error: err?.message || "Gmail network error" });
+  }
+});
+
+// 2. GET Gmail Messages List + Metadata
+app.get("/api/gmail/messages", async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Missing Google OAuth Bearer token" });
+  }
+  try {
+    const q = String(req.query?.q || "").trim();
+    const maxResults = Math.min(30, Math.max(1, Number(req.query?.maxResults || 15)));
+    const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    listUrl.searchParams.set("maxResults", String(maxResults));
+    if (q) listUrl.searchParams.set("q", q);
+
+    const listRes = await fetch(listUrl.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const listData = await listRes.json();
+    if (!listRes.ok) {
+      return res.status(listRes.status).json({
+        success: false,
+        error: listData?.error?.message || "Failed to list Gmail messages",
+      });
+    }
+
+    const messageRefs: { id: string; threadId: string }[] = Array.isArray(listData.messages)
+      ? listData.messages
+      : [];
+
+    const detailed = await Promise.all(
+      messageRefs.map(async (ref) => {
+        try {
+          const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+            ref.id
+          )}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`;
+          const mRes = await fetch(msgUrl, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!mRes.ok) return null;
+          const mData = await mRes.json();
+          const headers: { name: string; value: string }[] = mData?.payload?.headers || [];
+          const getHeader = (name: string) =>
+            headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || "";
+          const labelIds: string[] = Array.isArray(mData.labelIds) ? mData.labelIds : [];
+          return {
+            id: mData.id,
+            threadId: mData.threadId,
+            subject: getHeader("Subject") || "(No Subject)",
+            from: getHeader("From") || "Unknown Sender",
+            to: getHeader("To") || "",
+            date: getHeader("Date") || "",
+            snippet: mData.snippet || "",
+            labelIds,
+            isUnread: labelIds.includes("UNREAD"),
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    const messages = detailed.filter(Boolean);
+    return res.json({
+      success: true,
+      messages,
+      resultSizeEstimate: listData.resultSizeEstimate || messages.length,
+    });
+  } catch (err: any) {
+    return res.status(502).json({ success: false, error: err?.message || "Failed to fetch Gmail inbox" });
+  }
+});
+
+// 3. GET Full Gmail Message Body
+app.get("/api/gmail/messages/:id", async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Missing Google OAuth Bearer token" });
+  }
+  try {
+    const { id } = req.params;
+    const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`;
+    const mRes = await fetch(msgUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const mData = await mRes.json();
+    if (!mRes.ok) {
+      return res.status(mRes.status).json({
+        success: false,
+        error: mData?.error?.message || "Failed to load email body",
+      });
+    }
+    const headers: { name: string; value: string }[] = mData?.payload?.headers || [];
+    const getHeader = (name: string) =>
+      headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || "";
+    const labelIds: string[] = Array.isArray(mData.labelIds) ? mData.labelIds : [];
+    const bodyText = extractGmailBodyText(mData.payload) || mData.snippet || "";
+
+    return res.json({
+      success: true,
+      message: {
+        id: mData.id,
+        threadId: mData.threadId,
+        subject: getHeader("Subject") || "(No Subject)",
+        from: getHeader("From") || "Unknown Sender",
+        to: getHeader("To") || "",
+        date: getHeader("Date") || "",
+        snippet: mData.snippet || "",
+        labelIds,
+        isUnread: labelIds.includes("UNREAD"),
+        bodyText,
+      },
+    });
+  } catch (err: any) {
+    return res.status(502).json({ success: false, error: err?.message || "Gmail read failed" });
+  }
+});
+
+// 4. POST Send Email via Gmail API (with mandatory persistent Email & Audit logging)
+app.post("/api/gmail/send", async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Missing Google OAuth Bearer token" });
+  }
+  const { to, subject, body, senderEmail } = req.body || {};
+  const cleanTo = String(to || "").trim();
+  const cleanSubject = String(subject || "").trim();
+  const cleanBody = String(body || "").trim();
+  const actor = String(senderEmail || "admin0011").trim();
+
+  if (!cleanTo || !cleanSubject || !cleanBody) {
+    return res.status(400).json({ success: false, error: "Recipient, subject, and body are required" });
+  }
+
+  try {
+    const rawMime = encodeRfc2822Mime({
+      to: cleanTo,
+      subject: cleanSubject,
+      body: cleanBody,
+      from: senderEmail ? String(senderEmail) : undefined,
+    });
+
+    const gRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ raw: rawMime }),
+    });
+    const gData = await gRes.json();
+
+    if (!gRes.ok) {
+      const errMsg = gData?.error?.message || `Gmail send failed (HTTP ${gRes.status})`;
+      recordEmailLog({
+        direction: "outbound",
+        actor,
+        to: cleanTo,
+        from: actor,
+        subject: cleanSubject,
+        snippet: cleanBody.slice(0, 140),
+        status: "failed",
+        error: errMsg,
+      });
+      recordAuditLog({
+        category: "admin",
+        action: "GMAIL_SEND_FAILED",
+        actor,
+        target: cleanTo,
+        details: `Failed sending email "${cleanSubject}": ${errMsg}`,
+        status: "error",
+      });
+      return res.status(gRes.status).json({ success: false, error: errMsg });
+    }
+
+    const emailLog = recordEmailLog({
+      direction: "outbound",
+      actor,
+      to: cleanTo,
+      from: actor,
+      subject: cleanSubject,
+      snippet: cleanBody.slice(0, 140),
+      gmailMessageId: gData.id,
+      status: "sent",
+    });
+
+    recordAuditLog({
+      category: "admin",
+      action: "GMAIL_EMAIL_SENT",
+      actor,
+      target: cleanTo,
+      details: `Sent email "${cleanSubject}" via Gmail API`,
+      status: "success",
+    });
+
+    recordActivityLog({
+      userId: "admin0011",
+      userEmail: actor,
+      userName: "Master Admin",
+      feature: "gmail",
+      action: "GMAIL_EMAIL_SENT",
+      details: `Sent email "${cleanSubject}" to ${cleanTo}`,
+    });
+
+    return res.json({ success: true, gmailResponse: gData, emailLog });
+  } catch (err: any) {
+    const errMsg = err?.message || "Network error sending email";
+    recordEmailLog({
+      direction: "outbound",
+      actor,
+      to: cleanTo,
+      from: actor,
+      subject: cleanSubject,
+      snippet: cleanBody.slice(0, 140),
+      status: "failed",
+      error: errMsg,
+    });
+    return res.status(502).json({ success: false, error: errMsg });
+  }
+});
+
+// ============================================================================
+// MULTI-STREAM LOG APIs (Audit, Auth, User Activity, Email Delivery, Errors, Export)
+// ============================================================================
+
+// Unified Log Counters Summary
+app.get("/api/admin/logs/summary", (_req, res) => {
+  try {
+    const auditLogs = loadAuditLogs();
+    const authCount = auditLogs.filter((l) => l.category === "auth").length;
+    const activityCount = loadActivityLogs().length;
+    const emailCount = loadEmailLogs().length;
+    return res.json({
+      success: true,
+      summary: {
+        auditCount: auditLogs.length,
+        authCount,
+        activityCount,
+        emailCount,
+        errorCount: recentApiErrors.length,
+        totalApiRequests,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to load log summary" });
+  }
+});
+
+// Audit Logs Endpoints
+app.get("/api/admin/audit-logs", (req, res) => {
+  try {
+    const category = String(req.query?.category || "all");
+    const limit = Math.min(300, Math.max(10, Number(req.query?.limit || 150)));
+    let logs = loadAuditLogs();
+    if (category !== "all") {
+      logs = logs.filter((l) => l.category === category);
+    }
+    return res.json({ success: true, logs: logs.slice(0, limit) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to load audit logs" });
+  }
+});
+
+app.delete("/api/admin/audit-logs", (_req, res) => {
+  try {
+    saveAuditLogs([]);
+    const clearedLog = recordAuditLog({
+      category: "system",
+      action: "AUDIT_LOGS_CLEARED",
+      actor: "admin0011",
+      details: "Previous audit logs cleared by Master Administrator",
+      status: "warning",
+    });
+    return res.json({ success: true, logs: [clearedLog] });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to clear logs" });
+  }
+});
+
+// Auth & Login Logs Stream
+app.get("/api/admin/logs/auth", (req, res) => {
+  try {
+    const q = String(req.query?.q || "").trim().toLowerCase();
+    const limit = Math.min(300, Math.max(10, Number(req.query?.limit || 150)));
+    let logs = loadAuditLogs().filter((l) => l.category === "auth");
+    if (q) {
+      logs = logs.filter(
+        (l) =>
+          l.actor.toLowerCase().includes(q) ||
+          l.action.toLowerCase().includes(q) ||
+          l.details.toLowerCase().includes(q) ||
+          (l.target && l.target.toLowerCase().includes(q))
+      );
+    }
+    return res.json({ success: true, logs: logs.slice(0, limit) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to load auth logs" });
+  }
+});
+
+// Student Feature Activity / Telemetry Logs
+app.get("/api/admin/logs/activity", (req, res) => {
+  try {
+    const feature = String(req.query?.feature || "all");
+    const userId = String(req.query?.userId || "").trim();
+    const q = String(req.query?.q || "").trim().toLowerCase();
+    const limit = Math.min(500, Math.max(10, Number(req.query?.limit || 200)));
+    let logs = loadActivityLogs();
+    if (feature !== "all") {
+      logs = logs.filter((l) => l.feature === feature);
+    }
+    if (userId) {
+      logs = logs.filter((l) => l.userId === userId);
+    }
+    if (q) {
+      logs = logs.filter(
+        (l) =>
+          l.userEmail.toLowerCase().includes(q) ||
+          (l.userName && l.userName.toLowerCase().includes(q)) ||
+          l.action.toLowerCase().includes(q) ||
+          l.details.toLowerCase().includes(q)
+      );
+    }
+    return res.json({ success: true, logs: logs.slice(0, limit) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to load activity logs" });
+  }
+});
+
+app.post("/api/logs/activity", (req, res) => {
+  try {
+    const { userId, userEmail, userName, feature, action, details, metadata } = req.body || {};
+    if (!userId || !action) {
+      return res.status(400).json({ success: false, error: "userId and action are required" });
+    }
+    const item = recordActivityLog({
+      userId: String(userId),
+      userEmail: String(userEmail || "unknown"),
+      userName: userName ? String(userName) : undefined,
+      feature: String(feature || "profile"),
+      action: String(action),
+      details: String(details || ""),
+      metadata: metadata && typeof metadata === "object" ? metadata : undefined,
+    });
+    return res.json({ success: true, log: item });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to record activity log" });
+  }
+});
+
+app.delete("/api/admin/logs/activity", (_req, res) => {
+  try {
+    saveActivityLogs([]);
+    return res.json({ success: true, logs: [] });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to clear activity logs" });
+  }
+});
+
+// Email Delivery & Sync Logs
+app.get("/api/admin/email-logs", (req, res) => {
+  try {
+    const limit = Math.min(300, Math.max(10, Number(req.query?.limit || 150)));
+    const q = String(req.query?.q || "").trim().toLowerCase();
+    let logs = loadEmailLogs();
+    if (q) {
+      logs = logs.filter(
+        (l) =>
+          l.to.toLowerCase().includes(q) ||
+          l.subject.toLowerCase().includes(q) ||
+          l.actor.toLowerCase().includes(q) ||
+          (l.snippet && l.snippet.toLowerCase().includes(q))
+      );
+    }
+    return res.json({ success: true, logs: logs.slice(0, limit) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to load email logs" });
+  }
+});
+
+app.delete("/api/admin/email-logs", (_req, res) => {
+  try {
+    saveEmailLogs([]);
+    return res.json({ success: true, logs: [] });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to clear email logs" });
+  }
+});
+
+// API & Error Logs Stream
+app.get("/api/admin/logs/errors", (_req, res) => {
+  return res.json({ success: true, errors: [...recentApiErrors] });
+});
+
+app.delete("/api/admin/logs/errors", (_req, res) => {
+  recentApiErrors.length = 0;
+  return res.json({ success: true, errors: [] });
+});
+
+// Export Any Log Stream as JSON or CSV
+app.get("/api/admin/logs/export", (req, res) => {
+  try {
+    const stream = String(req.query?.stream || "all");
+    const format = String(req.query?.format || "json").toLowerCase();
+
+    const audit = loadAuditLogs();
+    const auth = audit.filter((l) => l.category === "auth");
+    const activity = loadActivityLogs();
+    const email = loadEmailLogs();
+    const errors = [...recentApiErrors];
+
+    let rows: any[] = [];
+    if (stream === "audit") rows = audit;
+    else if (stream === "auth") rows = auth;
+    else if (stream === "activity") rows = activity;
+    else if (stream === "email") rows = email;
+    else if (stream === "errors") rows = errors;
+    else {
+      rows = [
+        ...audit.map((l) => ({ stream: "audit", timestamp: l.timestamp, actor: l.actor, action: l.action, details: l.details, status: l.status })),
+        ...activity.map((l) => ({ stream: "activity", timestamp: l.timestamp, actor: l.userEmail, action: `${l.feature}:${l.action}`, details: l.details, status: "logged" })),
+        ...email.map((l) => ({ stream: "email", timestamp: l.timestamp, actor: l.actor, action: `EMAIL:${l.direction}`, details: `To: ${l.to} | Subject: ${l.subject}`, status: l.status })),
+        ...errors.map((l) => ({ stream: "errors", timestamp: l.timestamp, actor: l.route, action: `HTTP_${l.statusCode}`, details: l.message, status: "error" })),
+      ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    }
+
+    const dateTag = new Date().toISOString().split("T")[0];
+    if (format === "csv") {
+      const escapeCsv = (val: unknown) => {
+        const str = val === null || val === undefined ? "" : typeof val === "object" ? JSON.stringify(val) : String(val);
+        return `"${str.replace(/"/g, '""')}"`;
+      };
+      const headersSet = new Set<string>();
+      rows.forEach((r) => Object.keys(r || {}).forEach((k) => headersSet.add(k)));
+      const headers = Array.from(headersSet);
+      const csvLines = [
+        headers.map(escapeCsv).join(","),
+        ...rows.map((r) => headers.map((h) => escapeCsv(r?.[h])).join(",")),
+      ];
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="ProStudyMind_${stream}_logs_${dateTag}.csv"`);
+      return res.send(csvLines.join("\n"));
+    }
+
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="ProStudyMind_${stream}_logs_${dateTag}.json"`);
+    return res.send(JSON.stringify({ exportedAt: new Date().toISOString(), stream, count: rows.length, rows }, null, 2));
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Log export failed" });
+  }
+});
+
+// Full Server Snapshot Backup & Restore
+app.get("/api/admin/backup", (_req, res) => {
+  try {
+    const snapshot = {
+      exportedAt: new Date().toISOString(),
+      version: "2.0",
+      users: loadServerUsers(),
+      userStates: loadServerUserStates(),
+      announcements: loadAnnouncements(),
+      settings: loadPlatformSettings(),
+      auditLogs: loadAuditLogs(),
+      emailLogs: loadEmailLogs(),
+      activityLogs: loadActivityLogs(),
+    };
+    recordAuditLog({
+      category: "system",
+      action: "BACKUP_EXPORTED",
+      actor: "admin0011",
+      details: `Exported full server snapshot (${snapshot.users.length} users)`,
+      status: "success",
+    });
+    return res.json({ success: true, snapshot });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Backup export failed" });
+  }
+});
+
+app.post("/api/admin/restore", (req, res) => {
+  try {
+    const snapshot = req.body?.snapshot || req.body;
+    if (!snapshot || !Array.isArray(snapshot.users)) {
+      return res.status(400).json({ success: false, error: "Invalid backup snapshot format: missing users array" });
+    }
+
+    const restoredUsers: ServerStoredUser[] = [...snapshot.users];
+    if (!restoredUsers.some((u) => u.id === "admin0011")) {
+      restoredUsers.unshift(DEFAULT_SERVER_USERS[0]);
+    }
+    saveServerUsers(restoredUsers);
+    saveDeletedUserIds([]);
+
+    if (snapshot.userStates && typeof snapshot.userStates === "object") {
+      saveServerUserStates(snapshot.userStates);
+    }
+    if (Array.isArray(snapshot.announcements)) {
+      saveAnnouncements(snapshot.announcements);
+    }
+    if (snapshot.settings && typeof snapshot.settings === "object") {
+      savePlatformSettings({ ...DEFAULT_PLATFORM_SETTINGS, ...snapshot.settings, updatedAt: new Date().toISOString() });
+    }
+    if (Array.isArray(snapshot.emailLogs)) {
+      saveEmailLogs(snapshot.emailLogs);
+    }
+    if (Array.isArray(snapshot.activityLogs)) {
+      saveActivityLogs(snapshot.activityLogs);
+    }
+
+    recordAuditLog({
+      category: "system",
+      action: "BACKUP_RESTORED",
+      actor: "admin0011",
+      details: `Restored server snapshot (${restoredUsers.length} user accounts)`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, usersCount: restoredUsers.length });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Restore failed" });
+  }
+});
+
+export default app;
+
 // Start Server with Vite Middleware in Dev or Static in Production
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const vitePkg = "vite";
-    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: "spa",
@@ -5224,9 +7247,6 @@ async function startServer() {
   });
 }
 
-if (!IS_SERVERLESS) {
+if (!process.env.NETLIFY && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   startServer();
 }
-
-export { app };
-export default app;
