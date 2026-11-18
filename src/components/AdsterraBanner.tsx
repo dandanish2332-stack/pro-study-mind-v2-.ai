@@ -19,32 +19,32 @@ interface AdsterraBannerConfig {
 
 export const ADSTERRA_BANNERS: Record<AdsterraBannerId, AdsterraBannerConfig> = {
   banner1: {
-    key: "d72e536f2844cce92deee11b28ad5b6b",
-    width: 160,
-    height: 300,
-    src: "https://bauval.org/22/d72e536f2844cce92deee11b28ad5b6b",
-    label: "160x300",
-  },
-  banner2: {
-    key: "c3f917c418ae86f9ab9af33522e4c317",
-    width: 160,
-    height: 600,
-    src: "https://bauval.org/22/c3f917c418ae86f9ab9af33522e4c317",
-    label: "160x600",
-  },
-  banner3: {
-    key: "e4e00870a928e01b0bc146dc75f200ad",
-    width: 300,
-    height: 250,
-    src: "https://bauval.org/22/e4e00870a928e01b0bc146dc75f200ad",
-    label: "300x250",
-  },
-  banner4: {
-    key: "1d2f9035ce50c4780792f45c9f7c8e6c",
+    key: "191f598ff639ac6de5cdaf98650b699a",
     width: 468,
     height: 60,
-    src: "https://bauval.org/22/1d2f9035ce50c4780792f45c9f7c8e6c",
+    src: "https://bauval.org/22/191f598ff639ac6de5cdaf98650b699a",
     label: "468x60",
+  },
+  banner2: {
+    key: "b0d565031e8a3245f241c8fb34d0a66a",
+    width: 300,
+    height: 250,
+    src: "https://bauval.org/22/b0d565031e8a3245f241c8fb34d0a66a",
+    label: "300x250",
+  },
+  banner3: {
+    key: "aaab3ba8aee9a3877e8b393bdcf3d06c",
+    width: 160,
+    height: 300,
+    src: "https://bauval.org/22/aaab3ba8aee9a3877e8b393bdcf3d06c",
+    label: "160x300",
+  },
+  banner4: {
+    key: "3dc6df9ac3322ce8d5a503ddee98b87f",
+    width: 160,
+    height: 600,
+    src: "https://bauval.org/22/3dc6df9ac3322ce8d5a503ddee98b87f",
+    label: "160x600",
   },
   banner5: {
     key: "c2bc20030b97629b522f6c921c68d09f",

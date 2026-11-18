@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 
-const NATIVE_BANNER_SRC = "https://bauval.org/21/9aa6ebb5d021d803147e33705cca26cc";
-const NATIVE_BANNER_CONTAINER_ID = "container-9aa6ebb5d021d803147e33705cca26cc";
+const NATIVE_BANNER_SRC = "https://bauval.org/21/38053601c23e2e350ae903de24bfe1f0";
+const NATIVE_BANNER_CONTAINER_ID = "container-38053601c23e2e350ae903de24bfe1f0";
 
 export const AdsterraNativeBanner: React.FC<{ className?: string }> = ({ className = "" }) => {
   const wrapperRef = useRef<HTMLDivElement>(null);
