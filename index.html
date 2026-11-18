@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pro Study Mind v2.0 - Student Academic & AI Study Platform</title>
+    <meta name="description" content="Pro Study Mind v2.0 - 1,000+ Class Notes with Mathematical Formulas, Video Lectures for Every Class (1st to 12th + MDCAT/ECAT), Educational Games Arena, and AI Voice Assistant." />
+    
+    <!-- Google AdSense Code Banner Insertion -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7052563378343032"
+     crossorigin="anonymous"></script>
+
+    <script>
+      // Defensive guard for environments / browser extensions where window.fetch getter is non-writable
+      (function () {
+        try {
+          var globalObj = typeof window !== "undefined" ? window : typeof globalThis !== "undefined" ? globalThis : null;
+          if (!globalObj) return;
+
+          var _fetch = globalObj.fetch ? globalObj.fetch.bind(globalObj) : function () {
+            return Promise.reject(new Error("fetch is not available"));
+          };
+
+          // Define getter & setter on window and on every prototype up the chain (WindowProperties, Window.prototype, etc.)
+          var p = globalObj;
+          while (p) {
+            try {
+              var d = Object.getOwnPropertyDescriptor(p, "fetch");
+              if (d && (!d.writable || !d.set)) {
+                Object.defineProperty(p, "fetch", {
+                  get: function () {
+                    return _fetch;
+                  },
+                  set: function (fn) {
+                    _fetch = fn;
+                  },
+                  configurable: true,
+                  enumerable: true,
+                });
+              }
+            } catch (e) {}
+            p = Object.getPrototypeOf(p);
+          }
+
+          // Explicitly define configurable getter/setter on the global object itself
+          try {
+            Object.defineProperty(globalObj, "fetch", {
+              get: function () {
+                return _fetch;
+              },
+              set: function (fn) {
+                _fetch = fn;
+              },
+              configurable: true,
+              enumerable: true,
+            });
+          } catch (e) {}
+        } catch (e) {}
+      })();
+    </script>
+    <!-- Adsterra Popunder Code -->
+    <script async data-cfasync="false" src="https://abscloud.org/1/99286e3ec35fbf1b06358385033ba33f"></script>
+    <meta property="og:title" content="Pro Study Mind v2.0 - Student Academic & AI Study Platform" />
+    <meta property="og:description" content="Pro Study Mind v2.0 - 1,000+ Class Notes with Mathematical Formulas, Video Lectures for Every Class (1st to 12th + MDCAT/ECAT), Educational Games Arena, and AI Voice Assistant." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <!-- Adsterra Social Bar Code -->
+    <script async data-cfasync="false" src="https://bauval.org/14/1b91710b730c0d56a17f67777c902cfe"></script>
+  </body>
+</html>

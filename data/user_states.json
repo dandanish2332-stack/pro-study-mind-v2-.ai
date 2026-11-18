@@ -1,0 +1,180 @@
+{
+  "admin0011": {
+    "tasks": [
+      {
+        "id": "adm-t-1",
+        "title": "Verify Pakistan Curriculum Notes for FBISE & BISE Boards (Class 9-12)",
+        "description": "Audit all science subjects, KaTeX formulas, and past board questions",
+        "status": "completed",
+        "priority": "urgent",
+        "category": "System Control",
+        "dueDate": "2026-03-01",
+        "completed": true
+      },
+      {
+        "id": "adm-t-2",
+        "title": "Audit KaTeX Formula Engine & Organic Chemistry Reaction Diagrams",
+        "description": "Ensure complete formula rendering fidelity across web & mobile devices",
+        "status": "completed",
+        "priority": "high",
+        "category": "System Control",
+        "dueDate": "2026-03-05",
+        "completed": true
+      },
+      {
+        "id": "adm-t-3",
+        "title": "Inspect Multi-User Student Isolation & Database Integrity",
+        "description": "Verify that all student tasks, files, notes, and calendar items remain 100% isolated",
+        "status": "completed",
+        "priority": "urgent",
+        "category": "Security Audit",
+        "dueDate": "2026-03-08",
+        "completed": true
+      },
+      {
+        "id": "adm-t-4",
+        "title": "Deploy Multi-Language Academic Dictionary (English, Urdu, Pashto)",
+        "description": "Comprehensive multilingual study terminology engine verified and live",
+        "status": "completed",
+        "priority": "high",
+        "category": "Curriculum",
+        "dueDate": "2026-03-10",
+        "completed": true
+      },
+      {
+        "id": "adm-t-5",
+        "title": "Supervise Live Student Presence & Session Security",
+        "description": "Monitor real-time heartbeat and active online learners across Khyber Pakhtunkhwa & all boards",
+        "status": "in_progress",
+        "priority": "urgent",
+        "category": "Live Monitoring",
+        "dueDate": "2026-03-25",
+        "completed": false
+      },
+      {
+        "id": "adm-t-6",
+        "title": "Review SPS College Batkhela Campus Pre-Medical Board Mock Results",
+        "description": "Coordinate with student mentors on FSc 2nd year test series analysis",
+        "status": "todo",
+        "priority": "high",
+        "category": "Mentorship",
+        "dueDate": "2026-03-30",
+        "completed": false
+      }
+    ],
+    "files": [
+      {
+        "id": "adm-f-1",
+        "name": "PRO_Study_Mind_Master_Architecture_Specification.pdf",
+        "size": 348160,
+        "mimeType": "application/pdf",
+        "category": "pdf",
+        "tags": ["Architecture", "System", "Confidential"],
+        "uploadDate": "Admin Release v2.0",
+        "contentSnippet": "Full architecture blueprint of PRO Study Mind multi-user engine, KaTeX math parser, and live presence.",
+        "isEncrypted": false
+      },
+      {
+        "id": "adm-f-2",
+        "name": "BISE_Malakand_Peshawar_FSc_PreMedical_Keys_2026.pdf",
+        "size": 524288,
+        "mimeType": "application/pdf",
+        "category": "pdf",
+        "tags": ["FSc Keys", "Pre-Medical", "Board"],
+        "uploadDate": "Yesterday",
+        "contentSnippet": "Official verified answer keys and scoring rubric for Class 11 and 12 Board Examinations.",
+        "isEncrypted": false
+      },
+      {
+        "id": "adm-f-3",
+        "name": "Voice_Memo_Platform_Guidance_Danish.mp3",
+        "size": 184320,
+        "mimeType": "audio/webm",
+        "category": "audio",
+        "tags": ["Voice Memo", "Danish", "Admin"],
+        "uploadDate": "Today",
+        "contentSnippet": "Founder Danish spoken guidance for students of SPS College and users worldwide.",
+        "isEncrypted": false
+      }
+    ],
+    "calendar": [
+      {
+        "id": "adm-c-1",
+        "title": "BISE Board Examination Moderation & Review",
+        "description": "Moderation session for BISE Malakand and Peshawar model papers",
+        "startTime": "2026-11-12T09:00:00.000Z",
+        "endTime": "2026-11-12T11:00:00.000Z",
+        "category": "work",
+        "source": "OmniSync",
+        "synced": true
+      },
+      {
+        "id": "adm-c-2",
+        "title": "Platform Performance Benchmark & Real-Time Sync Inspection",
+        "description": "Evaluate sub-second cache hits and database heartbeat response times",
+        "startTime": "2026-11-13T14:00:00.000Z",
+        "endTime": "2026-11-13T15:30:00.000Z",
+        "category": "work",
+        "source": "OmniSync",
+        "synced": true
+      }
+    ],
+    "downloaded_pdf_ids": [
+      "pdf-bio-11-01",
+      "pdf-bio-11-02",
+      "pdf-bio-12-01",
+      "pdf-phys-11-01",
+      "pdf-phys-12-01",
+      "pdf-chem-11-01",
+      "pdf-chem-12-01",
+      "pdf-math-11-01",
+      "pdf-math-12-01"
+    ],
+    "game_profile": {
+      "level": 99,
+      "xp": 99999,
+      "xpToNextLevel": 100000,
+      "title": "Grandmaster Platform Architect & Lead Educator",
+      "totalGamesPlayed": 150,
+      "totalCorrect": 450,
+      "highestStreak": 50,
+      "soundEnabled": true,
+      "badges": [
+        {
+          "id": "b-1",
+          "title": "Master Architect",
+          "description": "Created the PRO Study Mind architecture",
+          "category": "Admin",
+          "icon": "👑",
+          "unlocked": true
+        },
+        {
+          "id": "b-2",
+          "title": "Curriculum Lead",
+          "description": "Verified all Class 1-12 curriculum notes",
+          "category": "Academic",
+          "icon": "📚",
+          "unlocked": true
+        },
+        {
+          "id": "b-3",
+          "title": "KaTeX Virtuoso",
+          "description": "Formulated advanced math and science equations",
+          "category": "Math",
+          "icon": "⚛️",
+          "unlocked": true
+        },
+        {
+          "id": "b-4",
+          "title": "Multi-User Guardian",
+          "description": "Ensured 100% multi-user isolation security",
+          "category": "Security",
+          "icon": "🛡️",
+          "unlocked": true
+        }
+      ]
+    },
+    "study_streak": 365,
+    "lastUpdated": 1794401770589
+  }
+}

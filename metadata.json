@@ -1,0 +1,12 @@
+{
+  "name": "study budy",
+  "description": "Bunny AI Voice Assistant \u0026 Workspace - voice mode enabled with \u0027Hey Bunny\u0027 wake word listener, file summaries, cloud sync, and task analytics.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
