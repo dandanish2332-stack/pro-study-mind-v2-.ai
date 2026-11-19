@@ -7,7 +7,6 @@ import {
   EyeOff,
   Sparkles,
   ArrowRight,
-  ShieldCheck,
   CheckCircle2,
   Atom,
   HardDrive,
@@ -344,7 +343,7 @@ export const LoginView: React.FC = () => {
               </svg>
             </div>
             <span className="gsi-material-button-contents">
-              {isGoogleLoading ? "Connecting Google..." : "Sign in with Google"}
+              {isGoogleLoading ? "Opening Google Account Chooser..." : "Sign in with Google"}
             </span>
           </button>
 
