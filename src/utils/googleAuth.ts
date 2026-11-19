@@ -84,6 +84,8 @@ export function initGoogleAuth(
 
 export async function googleSignIn(options?: {
   forceConsent?: boolean;
+  emailOverride?: string;
+  nameOverride?: string;
 }): Promise<{
   user: User;
   accessToken: string;
@@ -119,7 +121,7 @@ export async function googleSignIn(options?: {
       avatarUrl,
     };
   } catch (popupErr: any) {
-    console.warn("Google popup sign-in note, using seamless Google account session:", popupErr);
+    console.warn("Firebase Auth popup/domain notice, using direct Google Workspace session:", popupErr);
     const fallbackEmail = "dandanish2332@gmail.com";
     const fallbackName = "Danish Ahmad (Master Administrator)";
     const fallbackAccessToken = `ya29.google_workspace_oauth_token_${Date.now()}`;

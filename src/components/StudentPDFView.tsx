@@ -592,14 +592,23 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
   const handleDownload = (docItem: StudentPDFDocument, studentName?: string) => {
     setDownloadingId(docItem.id);
     try {
-      const fileName = downloadStudentPDFFile(docItem, studentName || customStudentName);
+      if (docItem.fileUrl) {
+        const a = document.createElement("a");
+        a.href = docItem.fileUrl;
+        a.download = docItem.fileUrl.split("/").pop() || "Class_12_Physics_Ch.11_Theory_Notes.pdf";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        downloadStudentPDFFile(docItem, studentName || customStudentName);
+      }
       if (!downloadedIds.includes(docItem.id)) {
         const next = [...downloadedIds, docItem.id];
         setDownloadedIds(next);
       }
-      showToast(`Downloaded "${fileName}" to your local files!`);
+      showToast(`Downloaded "${docItem.title}" successfully!`);
     } catch {
-      showToast("Could not generate PDF. Please try again.");
+      showToast("Could not download file. Please try again.");
     } finally {
       setTimeout(() => {
         setDownloadingId(null);

@@ -5776,7 +5776,7 @@ app.post("/api/users/google-auth", (req, res) => {
     const serverUsers = loadServerUsers();
     const isAdminEmail = cleanEmail === "dandanish2332@gmail.com";
     let idx = serverUsers.findIndex(
-      (u) => u.email.toLowerCase() === cleanEmail || (isAdminEmail && u.id === "admin0011")
+      (u) => u.email.toLowerCase() === cleanEmail || (isAdminEmail && (u.id === "admin0011" || u.email.toLowerCase() === "dandanish2332@gmail.com"))
     );
 
     const nowIso = new Date().toISOString();
@@ -7221,6 +7221,73 @@ app.post("/api/admin/restore", (req, res) => {
     return res.json({ success: true, usersCount: restoredUsers.length });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Restore failed" });
+  }
+});
+
+const UPLOADED_NOTES_FILE = path.join(process.cwd(), "data", "uploaded_notes.json");
+
+function loadUploadedNotes(): any[] {
+  try {
+    if (fs.existsSync(UPLOADED_NOTES_FILE)) {
+      return JSON.parse(fs.readFileSync(UPLOADED_NOTES_FILE, "utf-8"));
+    }
+  } catch {}
+  return [];
+}
+
+function saveUploadedNotes(notes: any[]): void {
+  try {
+    if (!fs.existsSync(path.dirname(UPLOADED_NOTES_FILE))) {
+      fs.mkdirSync(path.dirname(UPLOADED_NOTES_FILE), { recursive: true });
+    }
+    fs.writeFileSync(UPLOADED_NOTES_FILE, JSON.stringify(notes, null, 2), "utf-8");
+  } catch {}
+}
+
+app.get("/api/uploaded-notes", (_req, res) => {
+  res.json({ success: true, notes: loadUploadedNotes() });
+});
+
+app.post("/api/uploaded-notes", (req, res) => {
+  try {
+    const { title, description, subject, grade, fileSizeKb, pageCount, fileUrl, tags } = req.body || {};
+    if (!title || !fileUrl) {
+      return res.status(400).json({ success: false, error: "Title and fileUrl are required" });
+    }
+    const notes = loadUploadedNotes();
+    const newDoc = {
+      id: `uploaded-pdf-${Date.now()}`,
+      title,
+      description: description || "Uploaded study notes",
+      subject: subject || "Physics",
+      grade: grade || "Class 12",
+      category: "Complete Study Guide",
+      pageCount: Number(pageCount) || 12,
+      fileSizeKb: Number(fileSizeKb) || 1024,
+      downloadCount: 1,
+      lastUpdated: new Date().toISOString().split("T")[0],
+      isFeatured: true,
+      fileUrl,
+      tags: Array.isArray(tags) ? tags : [String(subject).toLowerCase(), String(grade).toLowerCase().replace(/\s+/g, "")],
+      sections: [
+        {
+          heading: "Uploaded PDF Study Notes",
+          subheading: title,
+          content: [
+            `• Document Title: ${title}`,
+            `• Grade Level: ${grade}`,
+            `• Subject: ${subject}`,
+            `• File Source: ${fileUrl}`,
+            `• Access: Available for direct download and reading across all devices.`,
+          ],
+        },
+      ],
+    };
+    notes.unshift(newDoc);
+    saveUploadedNotes(notes);
+    return res.json({ success: true, note: newDoc });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to upload note" });
   }
 });
 

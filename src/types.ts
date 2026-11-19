@@ -382,6 +382,7 @@ export interface StudentPDFDocument {
   lastUpdated: string;
   tags: string[];
   isFeatured?: boolean;
+  fileUrl?: string;
   sections: StudentPDFSection[];
 }
 

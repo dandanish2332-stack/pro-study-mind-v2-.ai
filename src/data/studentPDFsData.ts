@@ -3,6 +3,80 @@ import { getAllMasterCurriculumNotes } from "../services/curriculumNotesEngine";
 
 const baseCurriculumPDFs: StudentPDFDocument[] = [
   {
+    id: "pdf-phy-12-ch11-electrostatics-ilmi",
+    title: "Class 12 Physics: Electrostatics Master Theory Notes (Ilmi Stars Academy)",
+    description: "Official complete 57-page theory notes for 2nd Year Physics Chapter 11 Electrostatics (Federal & KPK Boards) covering Coulomb's Law, Electric Field & Intensity, Electric Flux, Gauss's Law, Applications, Electric Potential, Capacitors, and Charging/Discharging of RC circuits.",
+    subject: "Physics",
+    grade: "Class 12",
+    category: "Complete Study Guide",
+    pageCount: 57,
+    fileSizeKb: 4800,
+    downloadCount: 3850,
+    lastUpdated: "2026-11-19",
+    isFeatured: true,
+    fileUrl: "/assets/aistudio/Class_12_Physics_Ch.11_Theory_Notes_aade1763.pdf",
+    tags: ["physics", "class12", "electrostatics", "coulombs_law", "gauss_law", "capacitors", "ilmi_stars", "federal_kpk"],
+    sections: [
+      {
+        heading: "1. Charge & Coulomb's Law",
+        subheading: "Properties of Charge, Quantization & Coulomb's Law Derivation",
+        content: [
+          "• Definition: Property of matter due to which it produces or experiences electric and magnetic field. Minimum charge in nature is elementary particle (e = 1.6 × 10⁻¹⁹ C).",
+          "• Properties of Charge: Quantized (q = ne), scalar quantity, transferable, always associated with mass, and conserved.",
+          "• Coulomb's Law: Magnitude of force between two point charges is directly proportional to product of magnitudes of charges and inversely proportional to square of distance between them: F = k * (q₁ q₂ / r²).",
+          "• Permittivity of Free Space ε₀ = 8.85 × 10⁻¹² C² N⁻¹ m⁻²; k = 1 / (4πε₀) = 9.0 × 10⁹ N m² C⁻².",
+          "• Relative Permittivity / Dielectric Constant εr = ε / ε₀.",
+        ],
+        callouts: [
+          {
+            type: "key_definition",
+            title: "Coulomb's Law in Vacuum vs. Medium",
+            text: "When an insulator (dielectric) is placed between charges, force is reduced: F_med = 1 / (4πε * r²) = F_vac / εr.",
+          },
+        ],
+      },
+      {
+        heading: "2. Electric Field & Electric Flux",
+        subheading: "Field Intensity, Field Lines & Gauss's Law",
+        content: [
+          "• Electric Field Intensity: Force per unit positive test charge: E = F / q₀ (SI unit N/C or V/m).",
+          "• Electric Field Lines: Imaginary lines of force; radially outward for +q, inward for -q. Never intersect.",
+          "• Electric Flux: Scalar product of electric field E and vector area A: Φ_E = E · A = EA cos θ.",
+          "• Maximum Flux when θ = 0° (Φ = EA); Zero Flux when θ = 90° (Φ = 0).",
+          "• Gauss's Law: Total electric flux through any closed surface is equal to total charge q enclosed divided by permittivity of free space ε₀: Φ_E = q / ε₀.",
+        ],
+        callouts: [
+          {
+            type: "formula",
+            title: "Applications of Gauss's Law",
+            text: "1. Intensity inside a conductor is zero (E = 0). 2. Field due to infinite sheet of charge: E = σ / (2ε₀). 3. Field between oppositely charged parallel plates: E = σ / ε₀.",
+          },
+        ],
+      },
+      {
+        heading: "3. Electric Potential & Capacitance",
+        subheading: "Potential Difference, Absolute Potential & Parallel Plate Capacitors",
+        content: [
+          "• Electric Potential Difference: ΔV = W_BA / q₀ (SI unit Volt = J/C).",
+          "• Electric Potential (Absolute Potential): V = W_∞A / q₀ = (1 / 4πε₀) * (q / r).",
+          "• Potential Gradient: E = - (ΔV / Δr). Strength of field equals negative potential gradient.",
+          "• Capacitor: Device to store charge and electrical energy. C = Q / V (SI unit Farad = C/V).",
+          "• Capacitance of Parallel Plate Capacitor: C_vac = (ε₀ A) / d; With dielectric: C_med = (ε₀ εr A) / d.",
+          "• Energy Stored in Capacitor: U = (1/2) C V² = Q² / (2C) = (1/2) Q V.",
+          "• Energy Density in Electric Field: u = (1/2) E² ε₀ εr.",
+        ],
+      },
+      {
+        heading: "4. Charging & Discharging of Capacitor (RC Circuit)",
+        subheading: "Time Constant and Graphical Representation",
+        content: [
+          "• Time Constant: Product of resistance R and capacitance C (τ = RC). Time during which charge on capacitor reaches 63.2% of maximum charge during charging, or falls to 36.8% during discharging.",
+          "• Photocopier (Xerography), Laser Printer, and Inkjet Printer applications of electrostatics.",
+        ],
+      },
+    ],
+  },
+  {
     id: "pdf-bio-11-cell",
     title: "Class 11 Biology: Complete Cell Biology & Division Master Guide",
     description: "Detailed study guide covering cell theory, eukaryotic vs prokaryotic organelle ultrastructure, the cell cycle, and 4-phase mitosis vs meiosis mechanisms.",

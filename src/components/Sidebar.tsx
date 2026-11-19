@@ -31,7 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, badge: "Home" },
-    { id: "pdfs", label: "Student PDFs", icon: FileDown, badge: "Notes & Keys" },
+    { id: "pdfs", label: "AI Notes", icon: FileDown, badge: "Notes & Keys" },
     { id: "lectures", label: "Lectures", icon: GraduationCap, badge: "Class 1-12" },
     { id: "games", label: "Educational Games", icon: Gamepad2, badge: "Play & Learn" },
     { id: "dictionary", label: "Dictionary", icon: Languages, badge: "Multilingual" },
@@ -106,7 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
                 >
                   <div className="flex items-center gap-3">
                     <Icon className={`w-4 h-4 ${isActive ? "text-white" : "text-slate-500 dark:text-slate-400"}`} />
-                    <span>{item.label}</span>
+                    <span style={item.id === "pdfs" ? { color: "#ffffff" } : undefined}>{item.label}</span>
                   </div>
                   {item.badge && (
                     <span

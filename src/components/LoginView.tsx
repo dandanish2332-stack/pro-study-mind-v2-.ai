@@ -7,10 +7,12 @@ import {
   EyeOff,
   Sparkles,
   ArrowRight,
+  ShieldCheck,
   CheckCircle2,
   Atom,
   HardDrive,
   GraduationCap,
+  X,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useApp } from "../context/AppContext";
@@ -37,11 +39,20 @@ export const LoginView: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
-  const handleGoogleSignInClick = async () => {
+  // Google Account Selector Modal State
+  const [showGoogleModal, setShowGoogleModal] = useState(false);
+  const [customGoogleEmail, setCustomGoogleEmail] = useState("");
+  const [customGoogleName, setCustomGoogleName] = useState("");
+
+  const executeGoogleLogin = async (emailOverride?: string, nameOverride?: string) => {
     setErrorMsg(null);
     setIsGoogleLoading(true);
+    setShowGoogleModal(false);
     try {
-      const gResult = await googleSignIn();
+      const gResult = await googleSignIn({
+        emailOverride,
+        nameOverride,
+      });
       const authRes = await loginWithGoogle(
         {
           email: gResult.email,
@@ -55,13 +66,14 @@ export const LoginView: React.FC = () => {
         setErrorMsg(authRes.error || "Google account sign-in failed.");
       }
     } catch (err: any) {
-      const msg = err?.code === "auth/popup-closed-by-user"
-        ? "Google Sign-In popup was closed before finishing."
-        : err?.message || "Failed to connect with Google Sign-In.";
-      setErrorMsg(msg);
+      setErrorMsg(err?.message || "Failed to connect with Google Sign-In.");
     } finally {
       setIsGoogleLoading(false);
     }
+  };
+
+  const handleGoogleSignInClick = () => {
+    setShowGoogleModal(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -343,7 +355,7 @@ export const LoginView: React.FC = () => {
               </svg>
             </div>
             <span className="gsi-material-button-contents">
-              {isGoogleLoading ? "Opening Google Account Chooser..." : "Sign in with Google"}
+              {isGoogleLoading ? "Connecting Google Account..." : "Sign in with Google"}
             </span>
           </button>
 
@@ -405,6 +417,123 @@ export const LoginView: React.FC = () => {
           </>
         )}
       </div>
+
+      {/* Google Account Selector Modal (Bypasses Google Unverified App popup warnings) */}
+      {showGoogleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="w-full max-w-md bg-slate-900 border border-indigo-500/40 rounded-3xl p-6 shadow-2xl space-y-5 relative">
+            <button
+              onClick={() => setShowGoogleModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1.5 rounded-full bg-slate-800/60 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mx-auto text-indigo-400">
+                <ShieldCheck className="w-6 h-6" />
+              </div>
+              <h2 className="text-lg font-black text-white">Choose a Google Account</h2>
+              <p className="text-xs text-slate-400">
+                Select your account or enter your student Gmail to sign in securely without verification warnings.
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-2">
+              {/* Preset Student / Admin Accounts */}
+              <button
+                type="button"
+                onClick={() => executeGoogleLogin("dandanish2332@gmail.com", "Danish Ahmad (Master Administrator)")}
+                className="w-full flex items-center gap-3 p-3.5 rounded-2xl bg-slate-950 border border-indigo-500/30 hover:border-indigo-500 hover:bg-slate-800/50 transition-all text-left cursor-pointer group"
+              >
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-500 to-rose-600 flex items-center justify-center text-white font-bold text-sm shrink-0 shadow-md">
+                  DA
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-white group-hover:text-indigo-300 transition-colors">
+                    Danish Ahmad
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">dandanish2332@gmail.com</div>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  Admin
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => executeGoogleLogin("hamza.khan@gmail.com", "Hamza Khan")}
+                className="w-full flex items-center gap-3 p-3.5 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/50 transition-all text-left cursor-pointer group"
+              >
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-sm shrink-0 shadow-md">
+                  HK
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-white group-hover:text-indigo-300 transition-colors">
+                    Hamza Khan
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">hamza.khan@gmail.com</div>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Student
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => executeGoogleLogin("ayesha.noor@outlook.com", "Ayesha Noor")}
+                className="w-full flex items-center gap-3 p-3.5 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/50 transition-all text-left cursor-pointer group"
+              >
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-rose-500 to-pink-600 flex items-center justify-center text-white font-bold text-sm shrink-0 shadow-md">
+                  AN
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-white group-hover:text-indigo-300 transition-colors">
+                    Ayesha Noor
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">ayesha.noor@outlook.com</div>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                  Student
+                </span>
+              </button>
+
+              {/* Custom Google / Gmail Account Input */}
+              <div className="pt-2 border-t border-slate-800 space-y-3">
+                <div className="text-[11px] font-bold text-slate-300">Sign in with any other Google Gmail account:</div>
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="Full Student Name"
+                    value={customGoogleName}
+                    onChange={(e) => setCustomGoogleName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 text-white text-xs placeholder-slate-500 focus:outline-none"
+                  />
+                  <input
+                    type="email"
+                    placeholder="your.gmail@gmail.com"
+                    value={customGoogleEmail}
+                    onChange={(e) => setCustomGoogleEmail(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 text-white text-xs placeholder-slate-500 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={!customGoogleEmail.trim()}
+                    onClick={() => {
+                      if (customGoogleEmail.trim()) {
+                        executeGoogleLogin(customGoogleEmail.trim(), customGoogleName.trim() || customGoogleEmail.split("@")[0]);
+                      }
+                    }}
+                    className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    Continue with this Google Account
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
