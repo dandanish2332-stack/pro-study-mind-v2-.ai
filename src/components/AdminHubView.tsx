@@ -83,7 +83,6 @@ import {
   deleteAnnouncementFromFirestore,
   fetchAnnouncementsFromFirestore,
   fetchPlatformSettingsFromFirestore,
-  assertValidPdfBytes,
 } from "../services/cloudSyncService";
 import {
   AdminAuditLog,
@@ -380,20 +379,11 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     return () => unsubscribe();
   }, [loadUploadedNotes]);
 
-  const handleAdminPdfFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAdminPdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
         showToast("Please select a valid .pdf file.", "error");
-        e.target.value = "";
-        return;
-      }
-      try {
-        const headerBytes = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
-        assertValidPdfBytes(headerBytes);
-      } catch (err: any) {
-        showToast(err?.message || "Selected file is not a valid PDF document.", "error");
-        setSelectedPdfFile(null);
         e.target.value = "";
         return;
       }
@@ -487,12 +477,9 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
       await loadUploadedNotes();
 
       if (result.isGlobalCloud && autoOpenPdfNotesAfterUpload && setActiveTab) {
-        setIsUploadingPdf(false);
-        setUploadProgress(0);
-        setUploadStatusText("");
         setTimeout(() => {
           setActiveTab("pdfnotes");
-        }, 250);
+        }, 450);
       }
     } catch (err: any) {
       showToast(
@@ -501,9 +488,11 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
         "error"
       );
     } finally {
-      setIsUploadingPdf(false);
-      setUploadProgress(0);
-      setUploadStatusText("");
+      setTimeout(() => {
+        setIsUploadingPdf(false);
+        setUploadProgress(0);
+        setUploadStatusText("");
+      }, 600);
     }
   };
 

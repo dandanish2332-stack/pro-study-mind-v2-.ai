@@ -12,15 +12,12 @@ import {
   HardDrive,
   GraduationCap,
   AlertTriangle,
-  FileText,
-  X,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useApp } from "../context/AppContext";
 import { googleSignIn } from "../utils/googleAuth";
 import { StudentGrade } from "../types";
 import { ProStudyMindLogo } from "./ProStudyMindLogo";
-import { PdfNotesModeView } from "./PdfNotesModeView";
 import { AdsterraNativeBanner } from "./AdsterraNativeBanner";
 import { AdsterraBanner, AdsterraSmartlink } from "./AdsterraBanner";
 
@@ -40,7 +37,6 @@ export const LoginView: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [showPublicPdfModal, setShowPublicPdfModal] = useState(false);
 
   const handleGoogleSignInClick = async () => {
     setErrorMsg(null);
@@ -416,26 +412,6 @@ export const LoginView: React.FC = () => {
           </div>
         </div>
 
-        {/* Public PDF Notes Access Bar (All Students Can Read & Download) */}
-        <div className="p-4 rounded-2xl bg-indigo-950/50 border border-indigo-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="space-y-0.5">
-            <p className="text-xs font-extrabold text-white flex items-center gap-1.5">
-              <FileText className="w-4 h-4 text-cyan-400" />
-              Public PDF Notes Mode
-            </p>
-            <p className="text-[11px] text-slate-300">
-              All students can read &amp; download official uploaded PDF notes directly.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowPublicPdfModal(true)}
-            className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-extrabold whitespace-nowrap shadow-md shadow-cyan-500/20 transition-colors cursor-pointer"
-          >
-            Browse &amp; Download PDFs
-          </button>
-        </div>
-
         {/* Security & Academic Guarantees */}
         <div className="grid grid-cols-3 gap-3 text-center text-[10px] text-slate-400 pt-1">
           <div className="flex flex-col items-center gap-1">
@@ -460,31 +436,6 @@ export const LoginView: React.FC = () => {
           </>
         )}
       </div>
-
-      {/* Public PDF Notes Modal */}
-      {showPublicPdfModal && (
-        <div className="fixed inset-0 z-40 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-2 sm:p-6">
-          <div className="w-full max-w-6xl h-[92vh] rounded-3xl bg-slate-950 border border-indigo-500/40 shadow-2xl flex flex-col overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-900 shrink-0">
-              <div className="flex items-center gap-2 text-sm font-extrabold text-white">
-                <FileText className="w-4 h-4 text-cyan-400" />
-                <span>Public PDF Notes Library (All Students)</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowPublicPdfModal(false)}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors cursor-pointer"
-                title="Close Public PDF Library"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-              <PdfNotesModeView />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

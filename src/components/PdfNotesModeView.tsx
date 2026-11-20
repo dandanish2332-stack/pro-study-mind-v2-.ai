@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   FileText,
   Download,
@@ -14,25 +14,19 @@ import {
   Layers,
   HardDrive,
   Calendar,
+  ExternalLink,
   Trash2,
   Cloud,
-  ZoomIn,
-  ZoomOut,
-  RotateCcw,
 } from "lucide-react";
-import * as pdfjsLib from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
   UploadedPdfNoteRecord,
   fetchAllPdfNotes,
   subscribeToPdfNotes,
-  resolvePdfBytes,
+  resolvePdfViewUrl,
   downloadVerbatimPdf,
   deleteUploadedPdfNote,
 } from "../services/cloudSyncService";
 import { useAuth } from "../context/AuthContext";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface PdfNotesModeViewProps {
   onOpenAdminUpload?: () => void;
@@ -101,147 +95,18 @@ function formatSize(kb: number): string {
   return `${kb} KB`;
 }
 
-interface PdfCanvasRendererProps {
-  pdfBytes: Uint8Array;
-  scale: number;
-  onNumPages?: (n: number) => void;
-  onRenderError?: (msg: string) => void;
-}
-
-const PdfCanvasRenderer: React.FC<PdfCanvasRendererProps> = ({
-  pdfBytes,
-  scale,
-  onNumPages,
-  onRenderError,
-}) => {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [pageCount, setPageCount] = useState<number>(0);
-  const [renderedCount, setRenderedCount] = useState<number>(0);
-  const [isRendering, setIsRendering] = useState<boolean>(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    let loadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null;
-    let pdfDocument: Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]> | null = null;
-
-    const renderPages = async () => {
-      const container = containerRef.current;
-      if (!container) return;
-      container.innerHTML = "";
-      setIsRendering(true);
-      setRenderedCount(0);
-
-      try {
-        // Clone bytes because pdf.js worker transfers ownership of the underlying ArrayBuffer
-        const safeCopy = new Uint8Array(pdfBytes);
-        loadingTask = pdfjsLib.getDocument({ data: safeCopy });
-        pdfDocument = await loadingTask.promise;
-        if (cancelled) return;
-
-        const total = pdfDocument.numPages;
-        setPageCount(total);
-        onNumPages?.(total);
-
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-        for (let pageNum = 1; pageNum <= total; pageNum++) {
-          if (cancelled) break;
-          const page = await pdfDocument.getPage(pageNum);
-          if (cancelled) break;
-
-          const viewport = page.getViewport({ scale });
-          const pageWrapper = document.createElement("div");
-          pageWrapper.className =
-            "bg-white rounded-xl shadow-lg overflow-hidden border border-slate-300 dark:border-slate-700 mx-auto max-w-full";
-          pageWrapper.style.width = `${Math.floor(viewport.width)}px`;
-
-          const pageBadge = document.createElement("div");
-          pageBadge.className =
-            "px-3 py-1 bg-slate-100 border-b border-slate-200 text-[10px] font-mono font-bold text-slate-500 flex justify-between";
-          pageBadge.textContent = `Page ${pageNum} of ${total}`;
-
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.floor(viewport.width * dpr);
-          canvas.height = Math.floor(viewport.height * dpr);
-          canvas.style.width = `${Math.floor(viewport.width)}px`;
-          canvas.style.height = `${Math.floor(viewport.height)}px`;
-          canvas.className = "block max-w-full h-auto";
-
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            await page.render({
-              canvasContext: ctx,
-              canvas,
-              viewport,
-            }).promise;
-          }
-
-          if (cancelled) break;
-          pageWrapper.appendChild(pageBadge);
-          pageWrapper.appendChild(canvas);
-          container.appendChild(pageWrapper);
-          setRenderedCount(pageNum);
-        }
-
-        if (!cancelled) {
-          setIsRendering(false);
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setIsRendering(false);
-          onRenderError?.(
-            err?.message || "Could not render PDF pages. The uploaded PDF file may be corrupted."
-          );
-        }
-      }
-    };
-
-    renderPages();
-
-    return () => {
-      cancelled = true;
-      try {
-        loadingTask?.destroy();
-      } catch {}
-      try {
-        pdfDocument?.cleanup();
-      } catch {}
-    };
-  }, [pdfBytes, scale]);
-
-  return (
-    <div className="h-full overflow-y-auto p-3 sm:p-6 space-y-5 bg-slate-200 dark:bg-slate-950">
-      {isRendering && (
-        <div className="sticky top-2 z-10 mx-auto w-fit px-4 py-1.5 rounded-full bg-indigo-600 text-white text-xs font-bold shadow-lg flex items-center gap-2">
-          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-          <span>
-            {pageCount > 0
-              ? `Rendering page ${renderedCount} of ${pageCount}...`
-              : "Opening original PDF pages..."}
-          </span>
-        </div>
-      )}
-      <div ref={containerRef} className="space-y-5 flex flex-col items-center pb-8" />
-    </div>
-  );
-};
-
 export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminUpload }) => {
   const { isAdmin } = useAuth();
 
   const [notes, setNotes] = useState<UploadedPdfNoteRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [syncError, setSyncError] = useState<string | null>(null);
   const [selectedClass, setSelectedClass] = useState<string>("All Classes");
   const [selectedSubject, setSelectedSubject] = useState<string>("All Subjects");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   // Reader & Delete modal state
   const [activeNote, setActiveNote] = useState<UploadedPdfNoteRecord | null>(null);
-  const [resolvedBytes, setResolvedBytes] = useState<Uint8Array | null>(null);
-  const [detectedPageCount, setDetectedPageCount] = useState<number | null>(null);
-  const [readerScale, setReaderScale] = useState<number>(1.2);
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
   const [isResolvingPdf, setIsResolvingPdf] = useState<boolean>(false);
   const [readerError, setReaderError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -251,12 +116,9 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
 
   const loadNotes = async () => {
     setIsLoading(true);
-    setSyncError(null);
     try {
       const list = await fetchAllPdfNotes();
       setNotes(list);
-    } catch (err: any) {
-      setSyncError(err?.message || "Could not load PDF notes right now. Click Refresh PDFs to retry.");
     } finally {
       setIsLoading(false);
     }
@@ -264,17 +126,10 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
 
   useEffect(() => {
     loadNotes();
-    const unsubscribe = subscribeToPdfNotes(
-      (liveNotes) => {
-        setNotes(liveNotes);
-        setSyncError(null);
-        setIsLoading(false);
-      },
-      (err: any) => {
-        setSyncError(err?.message || "Live cloud sync paused. Showing cached/server PDFs.");
-        setIsLoading(false);
-      }
-    );
+    const unsubscribe = subscribeToPdfNotes((liveNotes) => {
+      setNotes(liveNotes);
+      setIsLoading(false);
+    });
     return () => unsubscribe();
   }, []);
 
@@ -285,17 +140,14 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
 
   const handleOpenReader = async (note: UploadedPdfNoteRecord) => {
     setActiveNote(note);
-    setResolvedBytes(null);
-    setDetectedPageCount(null);
+    setResolvedUrl(null);
     setReaderError(null);
     setIsResolvingPdf(true);
     try {
-      const bytes = await resolvePdfBytes(note);
-      setResolvedBytes(bytes);
+      const url = await resolvePdfViewUrl(note);
+      setResolvedUrl(url);
     } catch (err: any) {
-      setReaderError(
-        err?.message || "Could not load PDF preview. Please check your connection or re-upload the PDF."
-      );
+      setReaderError(err?.message || "Could not load PDF preview. You can try downloading the file directly.");
     } finally {
       setIsResolvingPdf(false);
     }
@@ -323,11 +175,6 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
       if (res.success) {
         setNotes((prev) => prev.filter((n) => n.id !== note.id));
         setConfirmDeleteId(null);
-        if (activeNote?.id === note.id) {
-          setActiveNote(null);
-          setResolvedBytes(null);
-          setReaderError(null);
-        }
         showNotice(`Removed "${note.title}" from PDF Notes Mode.`);
       } else {
         showNotice(res.error || "Could not delete PDF note.");
@@ -377,7 +224,7 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
   return (
     <div className="space-y-6 pb-12 animate-fadeIn max-w-6xl mx-auto">
       {toastMsg && (
-        <div className="fixed top-20 right-6 z-[70] px-4 py-3 rounded-xl bg-emerald-600 text-white shadow-xl flex items-center gap-2 text-xs font-bold border border-emerald-400">
+        <div className="fixed top-20 right-6 z-50 px-4 py-3 rounded-xl bg-emerald-600 text-white shadow-xl flex items-center gap-2 text-xs font-bold border border-emerald-400">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span>{toastMsg}</span>
         </div>
@@ -389,13 +236,13 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
           <div className="space-y-2 max-w-2xl">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-cyan-300 text-[11px] font-bold">
               <FileText className="w-3.5 h-3.5" />
-              Original Verbatim PDF Library · Classes 1 to 12 &amp; Entry Tests
+              Original Verbatim PDF Library · Classes 1 to 12 & Entry Tests
             </div>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight">
               PDF Notes Mode
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Read and download original, unmodified PDF study notes &amp; textbook chapters uploaded directly by the Master Administrator — preserved page-for-page with zero edits or changes.
+              Read and download original, unmodified PDF study notes & textbook chapters uploaded directly by the Master Administrator — preserved page-for-page with zero edits or changes.
             </p>
           </div>
 
@@ -443,22 +290,6 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
           </div>
         </div>
       </div>
-
-      {syncError && (
-        <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-xs font-semibold flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{syncError}</span>
-          </div>
-          <button
-            type="button"
-            onClick={loadNotes}
-            className="px-3 py-1 rounded-lg bg-amber-600 text-white text-[11px] font-bold cursor-pointer shrink-0"
-          >
-            Retry
-          </button>
-        </div>
-      )}
 
       {/* Filter & Search Bar */}
       <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
@@ -715,9 +546,9 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
         </div>
       )}
 
-      {/* In-App Verbatim Canvas PDF Reader Modal */}
+      {/* In-App Verbatim PDF Reader Modal */}
       {activeNote && (
-        <div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-5">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-5">
           <div className="w-full max-w-6xl h-[92vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl flex flex-col overflow-hidden">
             {/* Reader Header */}
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 dark:bg-slate-950 shrink-0">
@@ -729,11 +560,6 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
                   <span className="px-2 py-0.5 rounded-md bg-cyan-600 text-white text-[10px] font-bold">
                     {activeNote.subject}
                   </span>
-                  {detectedPageCount && (
-                    <span className="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-bold font-mono">
-                      {detectedPageCount} pages
-                    </span>
-                  )}
                   <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
                     {activeNote.fileName}
                   </span>
@@ -743,57 +569,21 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
                 </h3>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                {resolvedBytes && !readerError && (
-                  <div className="flex items-center gap-1 bg-slate-200 dark:bg-slate-800 rounded-xl p-1">
-                    <button
-                      type="button"
-                      onClick={() => setReaderScale((s) => Math.max(0.6, Number((s - 0.2).toFixed(2))))}
-                      className="p-1.5 rounded-lg hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-                      title="Zoom out"
-                    >
-                      <ZoomOut className="w-3.5 h-3.5" />
-                    </button>
-                    <span className="px-2 text-[11px] font-mono font-bold text-slate-700 dark:text-slate-200">
-                      {Math.round(readerScale * 100)}%
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setReaderScale((s) => Math.min(2.4, Number((s + 0.2).toFixed(2))))}
-                      className="p-1.5 rounded-lg hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-                      title="Zoom in"
-                    >
-                      <ZoomIn className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setReaderScale(1.2)}
-                      className="p-1.5 rounded-lg hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-                      title="Reset zoom"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
-
-                {!readerError && (
-                  <button
-                    type="button"
-                    onClick={() => handleDownload(activeNote)}
-                    disabled={downloadingId === activeNote.id}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow transition-colors cursor-pointer"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Download Verbatim PDF</span>
-                  </button>
-                )}
-
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleDownload(activeNote)}
+                  disabled={downloadingId === activeNote.id}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow transition-colors cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download Verbatim PDF</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
                     setActiveNote(null);
-                    setResolvedBytes(null);
-                    setDetectedPageCount(null);
+                    setResolvedUrl(null);
                     setReaderError(null);
                   }}
                   className="p-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
@@ -812,40 +602,43 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
                   <p className="text-xs font-bold">Loading original verbatim PDF from cloud storage...</p>
                 </div>
               ) : readerError ? (
-                <div className="h-full flex flex-col items-center justify-center p-6 text-center space-y-4 max-w-lg mx-auto">
+                <div className="h-full flex flex-col items-center justify-center p-6 text-center space-y-3">
                   <AlertCircle className="w-10 h-10 text-rose-500" />
-                  <p className="text-sm font-bold text-slate-900 dark:text-white leading-relaxed">
-                    {readerError}
-                  </p>
-                  <div className="flex items-center justify-center gap-2.5 flex-wrap">
+                  <p className="text-sm font-bold text-slate-900 dark:text-white">{readerError}</p>
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(activeNote)}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Original PDF Directly</span>
+                  </button>
+                </div>
+              ) : resolvedUrl ? (
+                <object
+                  data={resolvedUrl}
+                  type="application/pdf"
+                  className="w-full h-full"
+                >
+                  <iframe
+                    src={resolvedUrl}
+                    title={activeNote.title}
+                    className="w-full h-full border-0"
+                  />
+                  <div className="p-8 text-center space-y-3">
+                    <ExternalLink className="w-8 h-8 mx-auto text-indigo-500" />
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Your browser cannot embed PDFs inline here. Click below to download the original unmodified PDF file directly.
+                    </p>
                     <button
                       type="button"
-                      onClick={() => handleOpenReader(activeNote)}
-                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-900 dark:text-white text-xs font-bold cursor-pointer"
+                      onClick={() => handleDownload(activeNote)}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-bold cursor-pointer"
                     >
-                      <RefreshCw className="w-4 h-4" />
-                      <span>Retry</span>
+                      <Download className="w-4 h-4" /> Download Verbatim PDF
                     </button>
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        disabled={deletingId === activeNote.id}
-                        onClick={() => handleDeleteNote(activeNote)}
-                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        <span>{deletingId === activeNote.id ? "Removing..." : "Remove Corrupt Entry (Admin)"}</span>
-                      </button>
-                    )}
                   </div>
-                </div>
-              ) : resolvedBytes ? (
-                <PdfCanvasRenderer
-                  pdfBytes={resolvedBytes}
-                  scale={readerScale}
-                  onNumPages={setDetectedPageCount}
-                  onRenderError={(msg) => setReaderError(msg)}
-                />
+                </object>
               ) : null}
             </div>
           </div>
