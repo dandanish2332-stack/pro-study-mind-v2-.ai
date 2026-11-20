@@ -13,6 +13,7 @@ import {
   HardDrive,
   GraduationCap,
   X,
+  AlertTriangle,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useApp } from "../context/AppContext";
@@ -66,14 +67,24 @@ export const LoginView: React.FC = () => {
         setErrorMsg(authRes.error || "Google account sign-in failed.");
       }
     } catch (err: any) {
-      setErrorMsg(err?.message || "Failed to connect with Google Sign-In.");
+      const code = err?.code || "";
+      if (code === "auth/popup-blocked" || code === "auth/unauthorized-domain") {
+        setShowGoogleModal(true);
+        setErrorMsg(
+          code === "auth/popup-blocked"
+            ? "Browser blocked the Google popup. Allow popups or pick/enter your Google account below."
+            : "This domain is not authorized for Google popup sign-in yet. Pick or enter your Google account below."
+        );
+      } else {
+        setErrorMsg(err?.message || "Failed to connect with Google Sign-In.");
+      }
     } finally {
       setIsGoogleLoading(false);
     }
   };
 
   const handleGoogleSignInClick = () => {
-    setShowGoogleModal(true);
+    void executeGoogleLogin();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -109,10 +120,22 @@ export const LoginView: React.FC = () => {
 
       {/* Main Container Card */}
       <div className="w-full max-w-md relative z-10 space-y-6">
+        {platformSettings?.maintenanceBanner && platformSettings.maintenanceBanner.trim() !== "" && (
+          <div className="p-3.5 rounded-2xl bg-amber-950/80 border border-amber-500/50 text-amber-200 text-xs font-semibold flex items-start gap-2.5 shadow-lg">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <span>{platformSettings.maintenanceBanner}</span>
+          </div>
+        )}
+
         {/* Brand Header */}
         <div className="text-center space-y-3">
           <div className="inline-flex justify-center items-center">
-            <ProStudyMindLogo size="lg" showText={true} showBadge={true} />
+            <ProStudyMindLogo
+              size="lg"
+              showText={true}
+              showBadge={true}
+              customTitle={platformSettings?.platformName}
+            />
           </div>
           <div className="space-y-1">
             <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
@@ -160,8 +183,16 @@ export const LoginView: React.FC = () => {
 
           {/* Signup Paused Notice */}
           {mode === "signup" && platformSettings?.allowPublicSignup === false && (
-            <div className="p-3.5 rounded-2xl bg-amber-950/70 border border-amber-500/50 text-amber-200 text-xs font-semibold">
-              Public student registrations are currently paused by the Administrator. Existing students can sign in normally.
+            <div className="p-3.5 rounded-2xl bg-amber-950/70 border border-amber-500/50 text-amber-200 text-xs font-semibold space-y-1">
+              <p>
+                Public student registrations are currently paused by the Administrator. Existing students can sign in normally.
+              </p>
+              {platformSettings?.supportEmail && (
+                <p className="text-[11px] text-amber-300/90">
+                  Need an account? Contact support at{" "}
+                  <span className="font-mono underline">{platformSettings.supportEmail}</span>
+                </p>
+              )}
             </div>
           )}
 
@@ -355,9 +386,19 @@ export const LoginView: React.FC = () => {
               </svg>
             </div>
             <span className="gsi-material-button-contents">
-              {isGoogleLoading ? "Connecting Google Account..." : "Sign in with Google"}
+              {isGoogleLoading ? "Opening Google Account Picker..." : "Sign in with Google"}
             </span>
           </button>
+
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => setShowGoogleModal(true)}
+              className="text-[11px] text-slate-400 hover:text-indigo-400 underline cursor-pointer"
+            >
+              Popup blocked or testing locally? Choose Google account manually
+            </button>
+          </div>
 
           {/* Helper hint */}
           <div className="pt-2 text-center text-[11px] text-slate-400">

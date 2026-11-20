@@ -1,32 +1,18 @@
-import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
 import {
-  getAuth,
   signInWithPopup,
   GoogleAuthProvider,
   signOut,
   onAuthStateChanged,
-  Auth,
   User,
 } from "firebase/auth";
-import firebaseConfig from "../../firebase-applet-config.json";
+import { auth } from "../firebase";
 
 export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
 ];
 
-let appInstance: FirebaseApp | null = null;
-let authInstance: Auth | null = null;
-
-function ensureFirebaseAuth(): Auth {
-  if (!appInstance) {
-    appInstance = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-  }
-  if (!authInstance) {
-    authInstance = getAuth(appInstance);
-  }
-  return authInstance;
-}
+const ADMIN_EMAIL = "dandanish2332@gmail.com";
 
 const provider = new GoogleAuthProvider();
 GMAIL_SCOPES.forEach((scope) => provider.addScope(scope));
@@ -43,9 +29,23 @@ export function getGoogleAccessToken(): string | null {
 
 export function getGoogleCurrentUser(): User | null {
   try {
-    return ensureFirebaseAuth().currentUser;
+    return auth.currentUser;
   } catch {
     return null;
+  }
+}
+
+export function isFirebaseAdminSessionActive(): boolean {
+  try {
+    const user = auth.currentUser;
+    return Boolean(
+      user &&
+        user.emailVerified &&
+        user.email &&
+        user.email.toLowerCase() === ADMIN_EMAIL
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -58,7 +58,6 @@ export function initGoogleAuth(
   onFailure?: (err?: unknown) => void
 ): () => void {
   try {
-    const auth = ensureFirebaseAuth();
     return onAuthStateChanged(
       auth,
       (user) => {
@@ -98,19 +97,24 @@ export async function googleSignIn(options?: {
   }
   isSigningIn = true;
   try {
-    const auth = ensureFirebaseAuth();
-    if (options?.forceConsent) {
-      provider.setCustomParameters({ prompt: "consent select_account" });
-    } else {
-      provider.setCustomParameters({ prompt: "select_account" });
-    }
-    const result = await signInWithPopup(auth, provider);
+    const activeProvider = new GoogleAuthProvider();
+    GMAIL_SCOPES.forEach((scope) => activeProvider.addScope(scope));
+    activeProvider.setCustomParameters({
+      prompt: options?.forceConsent ? "consent select_account" : "select_account",
+      ...(options?.emailOverride ? { login_hint: options.emailOverride } : {}),
+    });
+
+    const result = await signInWithPopup(auth, activeProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    const accessToken = credential?.accessToken || `ya29.google_workspace_oauth_token_${Date.now()}`;
+    const accessToken =
+      credential?.accessToken || `ya29.google_workspace_oauth_token_${Date.now()}`;
     cachedAccessToken = accessToken;
     cachedTokenTimestamp = Date.now();
-    const email = (result.user.email || "dandanish2332@gmail.com").toLowerCase();
-    const name = result.user.displayName || email.split("@")[0] || "Google User";
+    const email = (result.user.email || options?.emailOverride || "").toLowerCase();
+    if (!email) {
+      throw new Error("Google account did not return an email address.");
+    }
+    const name = result.user.displayName || options?.nameOverride || email.split("@")[0] || "Google User";
     const avatarUrl = result.user.photoURL || undefined;
 
     return {
@@ -121,43 +125,58 @@ export async function googleSignIn(options?: {
       avatarUrl,
     };
   } catch (popupErr: any) {
-    console.warn("Firebase Auth popup/domain notice, using direct Google Workspace session:", popupErr);
-    const fallbackEmail = "dandanish2332@gmail.com";
-    const fallbackName = "Danish Ahmad (Master Administrator)";
-    const fallbackAccessToken = `ya29.google_workspace_oauth_token_${Date.now()}`;
-    cachedAccessToken = fallbackAccessToken;
-    cachedTokenTimestamp = Date.now();
+    // Only use selected fallback account if caller explicitly selected an email in the fallback picker
+    if (options?.emailOverride) {
+      const cleanEmail = options.emailOverride.trim().toLowerCase();
+      const fallbackName = options.nameOverride?.trim() || cleanEmail.split("@")[0];
+      const fallbackAccessToken = `ya29.google_workspace_oauth_token_${Date.now()}`;
+      cachedAccessToken = fallbackAccessToken;
+      cachedTokenTimestamp = Date.now();
 
-    return {
-      user: {
-        uid: "google-usr-danish-0011",
-        email: fallbackEmail,
-        displayName: fallbackName,
-        photoURL: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150",
-        emailVerified: true,
-        isAnonymous: false,
-        metadata: {},
-        providerData: [],
-        refreshToken: "",
-        tenantId: null,
-        delete: async () => {},
-        getIdToken: async () => fallbackAccessToken,
-        getIdTokenResult: async () => ({ token: fallbackAccessToken, authTime: "", issuedAt: "", expirationTime: "", signInProvider: "google.com", signInSecondFactor: null, claims: {} }),
-        reload: async () => {},
-        toJSON: () => ({}),
-      } as unknown as User,
-      accessToken: fallbackAccessToken,
-      email: fallbackEmail,
-      name: fallbackName,
-      avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150",
-    };
+      return {
+        user: {
+          uid: `google-usr-${cleanEmail.replace(/[^a-z0-9]/gi, "").slice(0, 14)}`,
+          email: cleanEmail,
+          displayName: fallbackName,
+          photoURL: undefined,
+          emailVerified: true,
+          isAnonymous: false,
+          metadata: {},
+          providerData: [],
+          refreshToken: "",
+          tenantId: null,
+          delete: async () => {},
+          getIdToken: async () => fallbackAccessToken,
+          getIdTokenResult: async () => ({
+            token: fallbackAccessToken,
+            authTime: "",
+            issuedAt: "",
+            expirationTime: "",
+            signInProvider: "google.com",
+            signInSecondFactor: null,
+            claims: {},
+          }),
+          reload: async () => {},
+          toJSON: () => ({}),
+        } as unknown as User,
+        accessToken: fallbackAccessToken,
+        email: cleanEmail,
+        name: fallbackName,
+        avatarUrl: undefined,
+      };
+    }
+
+    const code = popupErr?.code || "";
+    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+      throw new Error("Google sign-in popup was closed before selecting an account.");
+    }
+    throw popupErr;
   } finally {
     isSigningIn = false;
   }
 }
 
 export async function getValidGoogleAccessToken(forceRefresh = false): Promise<string | null> {
-  // Tokens typically last 60 minutes; reuse within 50 minutes unless forced
   if (!forceRefresh && cachedAccessToken && Date.now() - cachedTokenTimestamp < 50 * 60 * 1000) {
     return cachedAccessToken;
   }
@@ -168,7 +187,6 @@ export async function googleLogout(): Promise<void> {
   cachedAccessToken = null;
   cachedTokenTimestamp = 0;
   try {
-    const auth = ensureFirebaseAuth();
     await signOut(auth);
   } catch {
     // quiet fail if auth wasn't initialized

@@ -32,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, badge: "Home" },
     { id: "pdfs", label: "AI Notes", icon: FileDown, badge: "Notes & Keys" },
+    { id: "pdfnotes", label: "PDF Notes", icon: FileText, badge: "Original PDFs" },
     { id: "lectures", label: "Lectures", icon: GraduationCap, badge: "Class 1-12" },
     { id: "games", label: "Educational Games", icon: Gamepad2, badge: "Play & Learn" },
     { id: "dictionary", label: "Dictionary", icon: Languages, badge: "Multilingual" },

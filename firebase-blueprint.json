@@ -1,0 +1,341 @@
+{
+  "entities": {
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Authorized Master Administrator document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"]
+        }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "PlatformSettings": {
+      "title": "PlatformSettings",
+      "description": "Global platform configuration controlled by the Master Administrator.",
+      "type": "object",
+      "properties": {
+        "platformName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "supportEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "allowPublicSignup": {
+          "type": "boolean"
+        },
+        "aiTutorEnabled": {
+          "type": "boolean"
+        },
+        "adPlacementsEnabled": {
+          "type": "boolean"
+        },
+        "defaultDailyGoalHours": {
+          "type": "number"
+        },
+        "maintenanceBanner": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "platformName",
+        "supportEmail",
+        "allowPublicSignup",
+        "aiTutorEnabled",
+        "adPlacementsEnabled",
+        "defaultDailyGoalHours",
+        "maintenanceBanner",
+        "updatedAt"
+      ]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Global or class-targeted broadcast notice published by the Master Administrator.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "type": {
+          "type": "string",
+          "enum": ["urgent", "info", "sync", "security", "reminder"]
+        },
+        "targetGrade": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["id", "title", "message", "type", "targetGrade", "createdBy", "createdAt"]
+    },
+    "UploadedNote": {
+      "title": "UploadedNote",
+      "description": "PDF note uploaded verbatim by Master Administrator for students by class and subject.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "grade": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "fileName": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "pageCount": {
+          "type": "number"
+        },
+        "fileSizeKb": {
+          "type": "number"
+        },
+        "downloadCount": {
+          "type": "number"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "fileUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "storageType": {
+          "type": "string",
+          "enum": ["firebase_storage", "firestore_chunks", "static_asset", "server_api"]
+        },
+        "chunkCount": {
+          "type": "number"
+        },
+        "storagePath": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "uploadedBy": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "description",
+        "subject",
+        "grade",
+        "category",
+        "fileName",
+        "pageCount",
+        "fileSizeKb",
+        "downloadCount",
+        "lastUpdated",
+        "fileUrl",
+        "storageType"
+      ]
+    },
+    "UploadedPdfChunk": {
+      "title": "UploadedPdfChunk",
+      "description": "Base64 data chunk of an admin-uploaded verbatim PDF document stored safely under Firestore 1MB doc limits.",
+      "type": "object",
+      "properties": {
+        "noteId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkIndex": {
+          "type": "number"
+        },
+        "totalChunks": {
+          "type": "number"
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 750000
+        }
+      },
+      "required": ["noteId", "chunkIndex", "totalChunks", "data"]
+    },
+    "StudentProfile": {
+      "title": "StudentProfile",
+      "description": "Student account profile metadata protected by owner/admin isolation.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "grade": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "targetExam": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "schoolOrCollege": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "favoriteSubject": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "dailyGoalHours": {
+          "type": "number"
+        },
+        "avatarColor": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["email", "google", "guest"]
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "admin"]
+        },
+        "joinedDate": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "lastLogin": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "lastActiveTimestamp": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "name", "email", "grade", "provider", "role", "joinedDate", "lastLogin"]
+    },
+    "StudentPrivateState": {
+      "title": "StudentPrivateState",
+      "description": "Isolated student study state (tasks, files, calendar, streaks, XP, notifications) accessible only to the student or Master Admin.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "study_streak": {
+          "type": "number"
+        },
+        "lastUpdated": {
+          "type": "number"
+        }
+      },
+      "required": ["userId", "lastUpdated"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminMarker" },
+      "description": "Master Administrator role verification documents."
+    },
+    "/platform_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSettings" },
+      "description": "Global platform settings document ('global')."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Broadcast announcements published by Master Admin."
+    },
+    "/uploaded_notes/{noteId}": {
+      "schema": { "$ref": "#/entities/UploadedNote" },
+      "description": "Verbatim PDF study notes uploaded via Admin Hub."
+    },
+    "/uploaded_pdf_chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/UploadedPdfChunk" },
+      "description": "Chunked verbatim PDF binary data for reliable Firestore storage."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/StudentProfile" },
+      "description": "Student account records isolated per owner/admin."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/StudentPrivateState" },
+      "description": "Isolated per-student private state."
+    }
+  }
+}

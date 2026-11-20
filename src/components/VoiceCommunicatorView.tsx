@@ -77,7 +77,10 @@ export const VoiceCommunicatorView: React.FC = () => {
     setCustomVoiceURI,
     addNotification,
     addFile,
+    platformSettings,
   } = useApp();
+
+  const isAiPaused = platformSettings?.aiTutorEnabled === false;
 
   const [systemVoices, setSystemVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isListening, setIsListening] = useState(false);
@@ -397,6 +400,10 @@ export const VoiceCommunicatorView: React.FC = () => {
   };
 
   const startListening = async (isUserInitiated = false) => {
+    if (isAiPaused) {
+      setMicErrorMessage("AI Tutor & Voice Assistant endpoints are currently paused by the administrator.");
+      return;
+    }
     if (isThinkingRef.current) return;
 
     // Interrupt assistant speech if speaking
@@ -678,6 +685,18 @@ export const VoiceCommunicatorView: React.FC = () => {
   const processCommand = async (commandRaw: string) => {
     let command = commandRaw.trim();
     if (!command || isThinkingRef.current) return;
+    if (isAiPaused) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: "ai-paused-" + Date.now(),
+          sender: "ai",
+          text: "AI Tutor & Voice Assistant endpoints are currently paused by the Master Administrator.",
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        },
+      ]);
+      return;
+    }
 
     // Check and strip wake word prefix
     const lowerRaw = command.toLowerCase().replace(/[,.!?]/g, "").trim();
@@ -1094,6 +1113,18 @@ export const VoiceCommunicatorView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {isAiPaused && (
+        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-xs font-semibold flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
+          <div>
+            <p className="font-bold">AI Voice Tutor Temporarily Paused by Master Administrator</p>
+            <p className="text-[11px] opacity-90">
+              AI voice processing is disabled while platform governance has AI Tutor toggled off. Local voice memo recording & diagnostics remain usable.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Diagnostics panel */}
       {showDiagnostics && (
@@ -1572,14 +1603,20 @@ export const VoiceCommunicatorView: React.FC = () => {
                 type="text"
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
-                placeholder="Type a voice command or click microphone..."
-                className="flex-1 px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500"
+                disabled={isAiPaused}
+                placeholder={
+                  isAiPaused
+                    ? "AI Tutor is temporarily paused by Administrator..."
+                    : "Type a voice command or click microphone..."
+                }
+                className="flex-1 px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
               />
 
               <button
                 type="button"
+                disabled={isAiPaused}
                 onClick={isListening ? () => stopListening(true) : () => startListening(true)}
-                className={`p-3 rounded-2xl transition-all shadow ${
+                className={`p-3 rounded-2xl transition-all shadow disabled:opacity-50 ${
                   isListening
                     ? "bg-rose-600 text-white"
                     : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-indigo-500"
@@ -1591,7 +1628,7 @@ export const VoiceCommunicatorView: React.FC = () => {
 
               <button
                 type="submit"
-                disabled={!textInput.trim() || isThinking}
+                disabled={isAiPaused || !textInput.trim() || isThinking}
                 className="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-indigo-600/20"
               >
                 {isThinking ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}

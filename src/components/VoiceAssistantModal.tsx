@@ -50,7 +50,10 @@ export const VoiceAssistantModal: React.FC = () => {
     generateSocialDigest,
     toggleVaultLock,
     files,
+    platformSettings,
   } = useApp();
+
+  const isAiPaused = platformSettings?.aiTutorEnabled === false;
 
   // Conversational Assistant State
   const [isListening, setIsListening] = useState(false);
@@ -309,6 +312,10 @@ export const VoiceAssistantModal: React.FC = () => {
 
   // Start Voice Listening (Dual Engine)
   const startListening = async (isUserInitiated = false) => {
+    if (isAiPaused) {
+      setMicErrorMessage("AI Tutor endpoints are currently paused by the Master Administrator.");
+      return;
+    }
     if (isThinkingRef.current) return;
 
     // Interrupt assistant if it is currently speaking
@@ -511,6 +518,10 @@ export const VoiceAssistantModal: React.FC = () => {
   const processVoiceCommand = async (textToSend: string) => {
     const raw = textToSend.trim();
     if (!raw || isThinkingRef.current) return;
+    if (isAiPaused) {
+      setAiResponse("AI Tutor endpoints are currently paused by the Master Administrator.");
+      return;
+    }
 
     const lowerRaw = raw.toLowerCase().replace(/[,.!?]/g, "").trim();
     const isJustWakeWord =
@@ -702,6 +713,10 @@ export const VoiceAssistantModal: React.FC = () => {
     isModalOpenRef.current = isVoiceModalOpen;
     if (isVoiceModalOpen) {
       warmUpSpeechEngine();
+      if (isAiPaused) {
+        setAiResponse("AI Tutor & Voice Assistant endpoints are currently paused by the Master Administrator.");
+        return;
+      }
       playActivationChime();
       setTranscript("");
       setTextInput("");
@@ -732,7 +747,7 @@ export const VoiceAssistantModal: React.FC = () => {
       stopListening();
       stopAudioAnalysis(true);
     }
-  }, [isVoiceModalOpen, language]);
+  }, [isVoiceModalOpen, language, isAiPaused]);
 
   if (!isVoiceModalOpen) return null;
 
@@ -830,6 +845,12 @@ export const VoiceAssistantModal: React.FC = () => {
 
         {/* Voice Assistant Content */}
         <div className="animate-fadeIn">
+          {isAiPaused && (
+            <div className="my-3 p-3.5 rounded-2xl bg-amber-950/60 border border-amber-600/50 text-amber-200 text-xs font-semibold flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>AI Tutor & Voice Assistant endpoints are currently paused by the Master Administrator.</span>
+            </div>
+          )}
             {/* Waveform Visualization & Status Box */}
             <div className="my-4 flex flex-col items-center justify-center py-5 rounded-2xl bg-slate-950/60 border border-slate-800/80 relative">
               {/* Animated Wave Bars with live decibel scaling */}
@@ -1004,8 +1025,9 @@ export const VoiceAssistantModal: React.FC = () => {
             >
               <button
                 type="button"
+                disabled={isAiPaused}
                 onClick={handleToggleMic}
-                className={`p-2.5 rounded-xl border transition-all ${
+                className={`p-2.5 rounded-xl border transition-all disabled:opacity-40 ${
                   isListening
                     ? "bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/30 animate-pulse"
                     : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
@@ -1017,15 +1039,20 @@ export const VoiceAssistantModal: React.FC = () => {
 
               <input
                 type="text"
+                disabled={isAiPaused}
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
-                placeholder="Type a voice command or speak into microphone..."
-                className="flex-1 bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                placeholder={
+                  isAiPaused
+                    ? "AI Tutor is temporarily paused by Administrator..."
+                    : "Type a voice command or speak into microphone..."
+                }
+                className="flex-1 bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50"
               />
 
               <button
                 type="submit"
-                disabled={!textInput.trim() || isThinking}
+                disabled={isAiPaused || !textInput.trim() || isThinking}
                 className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white transition-colors flex items-center justify-center"
                 title="Send Command"
               >

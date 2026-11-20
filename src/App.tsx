@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { AppProvider, useApp } from "./context/AppContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { LoginView } from "./components/LoginView";
@@ -14,6 +14,7 @@ import { AIChatBotView } from "./components/AIChatBotView";
 import { AIMediaStudioView } from "./components/AIMediaStudioView";
 import { LecturesModeView } from "./components/LecturesModeView";
 import { StudentPDFView } from "./components/StudentPDFView";
+import { PdfNotesModeView } from "./components/PdfNotesModeView";
 import { EducationalGamesView } from "./components/EducationalGamesView";
 import { DictionaryView } from "./components/DictionaryView";
 import { DeviceSyncView } from "./components/DeviceSyncView";
@@ -33,9 +34,18 @@ const AppContent: React.FC = () => {
   const { isAuthenticated, isLoading, isImpersonating, exitImpersonation, currentUser } = useAuth();
   const { platformSettings } = useApp();
   const [activeTab, setActiveTab] = useState<string>("dashboard");
+  const [adminInitialSection, setAdminInitialSection] = useState<string | undefined>(undefined);
   const [pdfSubjectFilter, setPdfSubjectFilter] = useState<string | null>(null);
   const [isNotifModalOpen, setIsNotifModalOpen] = useState<boolean>(false);
   const [isWelcomeSplashOpen, setIsWelcomeSplashOpen] = useState<boolean>(true);
+
+  useEffect(() => {
+    if (platformSettings?.platformName) {
+      document.title = platformSettings.platformName;
+    } else {
+      document.title = "PRO Study Mind v2.0";
+    }
+  }, [platformSettings?.platformName]);
 
   if (isLoading) {
     return (
@@ -65,7 +75,13 @@ const AppContent: React.FC = () => {
       case "dashboard":
         return <DashboardView setActiveTab={setActiveTab} onNavigateToPDFs={navigateToPDFsWithSubject} />;
       case "admin":
-        return <AdminHubView setActiveTab={setActiveTab} />;
+        return (
+          <AdminHubView
+            setActiveTab={setActiveTab}
+            initialSectionTab={adminInitialSection as any}
+            onConsumeInitialSection={() => setAdminInitialSection(undefined)}
+          />
+        );
       case "profile":
         return <UserProfileView setActiveTab={setActiveTab} />;
       case "dictionary":
@@ -74,6 +90,15 @@ const AppContent: React.FC = () => {
         return <EducationalGamesView />;
       case "pdfs":
         return <StudentPDFView initialSubjectFilter={pdfSubjectFilter} />;
+      case "pdfnotes":
+        return (
+          <PdfNotesModeView
+            onOpenAdminUpload={() => {
+              setAdminInitialSection("pdf-upload");
+              setActiveTab("admin");
+            }}
+          />
+        );
       case "lectures":
         return <LecturesModeView />;
       case "media":

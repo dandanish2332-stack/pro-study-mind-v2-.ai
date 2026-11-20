@@ -38,7 +38,10 @@ export const AIChatBotView: React.FC = () => {
     setIsVoiceModalOpen,
     language,
     speakBunny,
+    platformSettings,
   } = useApp();
+
+  const isAiPaused = platformSettings?.aiTutorEnabled === false;
 
   const [inputText, setInputText] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -170,6 +173,7 @@ export const AIChatBotView: React.FC = () => {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAiPaused) return;
     if ((!inputText.trim() && !attachedFile) || isSending) return;
 
     const textToSend = inputText.trim() || (attachedFile ? `Please examine this attached file: ${attachedFile.name}` : "");
@@ -233,12 +237,25 @@ export const AIChatBotView: React.FC = () => {
 
           <button
             onClick={() => setIsVoiceModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white text-xs font-bold transition-all shadow-md shrink-0"
+            disabled={isAiPaused}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 disabled:opacity-50 text-white text-xs font-bold transition-all shadow-md shrink-0"
           >
             <Mic className="w-4 h-4 animate-pulse" /> Launch Voice Mode
           </button>
         </div>
       </div>
+
+      {isAiPaused && (
+        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-xs font-semibold flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />
+          <div>
+            <p className="font-bold">AI Tutor Temporarily Paused by Master Administrator</p>
+            <p className="text-[11px] opacity-90">
+              Your existing chat history remains readable below. An administrator can re-enable AI Tutor endpoints from Backend & Server Control.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Main Chat Box */}
       <div
@@ -621,18 +638,22 @@ export const AIChatBotView: React.FC = () => {
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
+            disabled={isAiPaused}
             placeholder={
-              attachedFile
+              isAiPaused
+                ? "AI Tutor endpoints are currently paused by the administrator..."
+                : attachedFile
                 ? `Ask anything about ${attachedFile.name}...`
                 : `Ask AI, or type "make image of...", "diagram of...", "video of..."`
             }
-            className="flex-1 px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500"
+            className="flex-1 px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
           />
 
           <button
             type="button"
             onClick={() => setIsVoiceModalOpen(true)}
-            className="p-3 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 flex items-center justify-center shrink-0 transition-colors"
+            disabled={isAiPaused}
+            className="p-3 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900 disabled:opacity-50 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 flex items-center justify-center shrink-0 transition-colors"
             title="Speak query with Voice Assistant"
           >
             <Mic className="w-4 h-4" />
@@ -640,7 +661,7 @@ export const AIChatBotView: React.FC = () => {
 
           <button
             type="submit"
-            disabled={(!inputText.trim() && !attachedFile) || isSending}
+            disabled={isAiPaused || (!inputText.trim() && !attachedFile) || isSending}
             className="p-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center transition-all shadow-md shadow-indigo-600/20 shrink-0"
             title="Send Message"
           >

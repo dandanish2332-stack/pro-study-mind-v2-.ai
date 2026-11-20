@@ -2,7 +2,6 @@ import express from "express";
 import compression from "compression";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { PAKISTANI_LECTURES } from "./src/data/pakistaniLecturesData";
 
@@ -11,7 +10,32 @@ const PORT = process.env.NODE_ENV === "production" && process.env.PORT ? Number(
 
 // High-speed HTTP response compression (gzip/deflate) to minimize payload transfer latency
 app.use(compression());
-app.use(express.json({ limit: "20mb" }));
+app.use(express.json({ limit: "30mb" }));
+
+// Normalize Netlify Function & proxy paths so /api/* routes always match cleanly
+app.use((req, _res, next) => {
+  if (req.url.startsWith("/.netlify/functions/api")) {
+    const rest = req.url.slice("/.netlify/functions/api".length) || "/";
+    req.url = rest.startsWith("/api/") || rest === "/api" ? rest : `/api${rest.startsWith("/") ? rest : `/${rest}`}`;
+  } else if (!req.url.startsWith("/api/") && req.url !== "/api") {
+    const knownApiPrefixes = [
+      "/health",
+      "/ai/",
+      "/generate-",
+      "/users/",
+      "/admin/",
+      "/platform-settings",
+      "/announcements",
+      "/gmail/",
+      "/logs/",
+      "/uploaded-notes",
+    ];
+    if (knownApiPrefixes.some((p) => req.url.startsWith(p))) {
+      req.url = `/api${req.url}`;
+    }
+  }
+  next();
+});
 
 // Real-time Server & API Telemetry Tracker
 const serverStartedAt = new Date().toISOString();
@@ -694,20 +718,17 @@ app.get("/api/health", (_req, res) => {
 // Global AI Tutor toggle enforcement controlled by Master Admin platform settings
 app.use(["/api/ai", "/api/generate-ai-text"], (_req, res, next) => {
   try {
-    const settingsPath = path.join(process.cwd(), "data", "platform_settings.json");
-    if (fs.existsSync(settingsPath)) {
-      const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      if (parsed && parsed.aiTutorEnabled === false) {
-        return res.status(503).json({
-          success: false,
-          disabledByAdmin: true,
-          error: "AI Tutor endpoints are currently paused by the Master Administrator.",
-          reply: "AI Tutor endpoints are temporarily paused by the Master Administrator.",
-        });
-      }
+    const parsed = loadPlatformSettings();
+    if (parsed && parsed.aiTutorEnabled === false) {
+      return res.status(503).json({
+        success: false,
+        disabledByAdmin: true,
+        error: "AI Tutor endpoints are currently paused by the Master Administrator.",
+        reply: "AI Tutor endpoints are temporarily paused by the Master Administrator.",
+      });
     }
   } catch {
-    // Allow request if settings file cannot be parsed
+    // Allow request if settings cannot be read
   }
   return next();
 });
@@ -4906,7 +4927,45 @@ Output STRICTLY valid JSON with no markdown formatting.`;
 // ============================================================================
 // PERSISTENT USER REGISTRY & STUDENT SYNCHRONIZATION SYSTEM
 // ============================================================================
-const DATA_DIR = path.join(process.cwd(), "data");
+const SEED_DATA_DIR = path.join(process.cwd(), "data");
+const TMP_DATA_DIR = "/tmp/prostudymind-data";
+
+function resolveWritableDataDir(): string {
+  const isServerless = Boolean(
+    process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.VERCEL
+  );
+  if (!isServerless) {
+    try {
+      if (!fs.existsSync(SEED_DATA_DIR)) {
+        fs.mkdirSync(SEED_DATA_DIR, { recursive: true });
+      }
+      fs.accessSync(SEED_DATA_DIR, fs.constants.W_OK);
+      const probe = path.join(SEED_DATA_DIR, ".write_probe");
+      fs.writeFileSync(probe, "ok", "utf-8");
+      fs.unlinkSync(probe);
+      return SEED_DATA_DIR;
+    } catch {
+      // Read-only filesystem detected; fall back to /tmp
+    }
+  }
+  try {
+    if (!fs.existsSync(TMP_DATA_DIR)) {
+      fs.mkdirSync(TMP_DATA_DIR, { recursive: true });
+    }
+    if (fs.existsSync(SEED_DATA_DIR)) {
+      for (const file of fs.readdirSync(SEED_DATA_DIR)) {
+        const src = path.join(SEED_DATA_DIR, file);
+        const dest = path.join(TMP_DATA_DIR, file);
+        if (fs.statSync(src).isFile() && !fs.existsSync(dest)) {
+          fs.copyFileSync(src, dest);
+        }
+      }
+    }
+  } catch {}
+  return TMP_DATA_DIR;
+}
+
+const DATA_DIR = resolveWritableDataDir();
 const USERS_FILE = path.join(DATA_DIR, "users_db.json");
 const USER_STATES_FILE = path.join(DATA_DIR, "user_states.json");
 const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, "announcements.json");
@@ -4915,13 +4974,55 @@ const SETTINGS_FILE = path.join(DATA_DIR, "platform_settings.json");
 const DELETED_USERS_FILE = path.join(DATA_DIR, "deleted_users.json");
 const EMAIL_LOGS_FILE = path.join(DATA_DIR, "email_logs.json");
 const ACTIVITY_LOGS_FILE = path.join(DATA_DIR, "activity_logs.json");
+const UPLOADED_NOTES_FILE = path.join(DATA_DIR, "uploaded_notes.json");
+const UPLOADED_PDF_BLOBS_DIR = path.join(DATA_DIR, "pdf_files");
 
-// Ensure data folder exists
-if (!fs.existsSync(DATA_DIR)) {
+try {
+  if (!fs.existsSync(UPLOADED_PDF_BLOBS_DIR)) {
+    fs.mkdirSync(UPLOADED_PDF_BLOBS_DIR, { recursive: true });
+  }
+} catch {}
+
+function readSeedOrWritableJson<T>(filePath: string, fallback: T): T {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  } catch (e) {}
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+    }
+    const seedPath = path.join(SEED_DATA_DIR, path.basename(filePath));
+    if (seedPath !== filePath && fs.existsSync(seedPath)) {
+      return JSON.parse(fs.readFileSync(seedPath, "utf-8")) as T;
+    }
+  } catch {}
+  return fallback;
 }
+
+function writeWritableJson(filePath: string, data: unknown): void {
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+  } catch (e) {
+    console.warn(`Notice writing ${path.basename(filePath)}:`, e);
+  }
+}
+
+// Authoritative in-memory store ensures instant consistency even on ephemeral/read-only publish environments
+const memStore: {
+  users?: any[];
+  userStates?: Record<string, any>;
+  announcements?: any[];
+  auditLogs?: any[];
+  emailLogs?: any[];
+  activityLogs?: any[];
+  platformSettings?: any;
+  deletedUserIds?: string[];
+  uploadedNotes?: any[];
+  pdfDataUrls: Map<string, string>;
+} = {
+  pdfDataUrls: new Map(),
+};
 
 interface ServerStoredUser {
   id: string;
@@ -5050,33 +5151,25 @@ const DEFAULT_SERVER_USERS: ServerStoredUser[] = [
 ];
 
 function loadServerUsers(): ServerStoredUser[] {
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      const raw = fs.readFileSync(USERS_FILE, "utf-8");
-      const list = JSON.parse(raw);
-      if (Array.isArray(list) && list.length > 0) {
-        // Guarantee admin0011 is always in the list
-        if (!list.some((u) => u.id === "admin0011" || u.email.toLowerCase() === "admin0011")) {
-          list.unshift(DEFAULT_SERVER_USERS[0]);
-          saveServerUsers(list);
-        }
-        return list;
-      }
-    }
-  } catch (e) {
-    console.warn("Error reading users file:", e);
+  if (Array.isArray(memStore.users) && memStore.users.length > 0) {
+    return memStore.users;
   }
-  // Initialize with default
-  saveServerUsers(DEFAULT_SERVER_USERS);
-  return DEFAULT_SERVER_USERS;
+  const list = readSeedOrWritableJson<ServerStoredUser[]>(USERS_FILE, []);
+  if (Array.isArray(list) && list.length > 0) {
+    if (!list.some((u) => u.id === "admin0011" || u.email?.toLowerCase() === "admin0011")) {
+      list.unshift(DEFAULT_SERVER_USERS[0]);
+    }
+    memStore.users = list;
+    return memStore.users;
+  }
+  memStore.users = [...DEFAULT_SERVER_USERS];
+  saveServerUsers(memStore.users);
+  return memStore.users;
 }
 
 function saveServerUsers(users: ServerStoredUser[]): void {
-  try {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving users file:", e);
-  }
+  memStore.users = users;
+  writeWritableJson(USERS_FILE, users);
 }
 
 const DEFAULT_SERVER_USER_STATES: Record<string, any> = {
@@ -5191,16 +5284,11 @@ const DEFAULT_SERVER_USER_STATES: Record<string, any> = {
 };
 
 function loadServerUserStates(): Record<string, any> {
-  let states: Record<string, any> = {};
-  try {
-    if (fs.existsSync(USER_STATES_FILE)) {
-      const raw = fs.readFileSync(USER_STATES_FILE, "utf-8");
-      states = JSON.parse(raw) || {};
-    }
-  } catch (e) {
-    console.warn("Error reading user states file:", e);
-    states = {};
+  if (memStore.userStates) {
+    return memStore.userStates;
   }
+  let states: Record<string, any> = readSeedOrWritableJson<Record<string, any>>(USER_STATES_FILE, {});
+  if (!states || typeof states !== "object") states = {};
 
   // Hydrate missing states for active default/seeded users without overwriting saved states
   const activeUsers = loadServerUsers();
@@ -5211,18 +5299,16 @@ function loadServerUserStates(): Record<string, any> {
       changed = true;
     }
   }
+  memStore.userStates = states;
   if (changed) {
     saveServerUserStates(states);
   }
-  return states;
+  return memStore.userStates;
 }
 
 function saveServerUserStates(states: Record<string, any>): void {
-  try {
-    fs.writeFileSync(USER_STATES_FILE, JSON.stringify(states, null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving user states file:", e);
-  }
+  memStore.userStates = states;
+  writeWritableJson(USER_STATES_FILE, states);
 }
 
 interface ServerAnnouncement {
@@ -5269,39 +5355,28 @@ const DEFAULT_PLATFORM_SETTINGS: ServerPlatformSettings = {
 };
 
 function loadAnnouncements(): ServerAnnouncement[] {
-  try {
-    if (fs.existsSync(ANNOUNCEMENTS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(ANNOUNCEMENTS_FILE, "utf-8"));
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch (e) {}
-  return [];
+  if (Array.isArray(memStore.announcements)) return memStore.announcements;
+  const parsed = readSeedOrWritableJson<ServerAnnouncement[]>(ANNOUNCEMENTS_FILE, []);
+  memStore.announcements = Array.isArray(parsed) ? parsed : [];
+  return memStore.announcements;
 }
 
 function saveAnnouncements(list: ServerAnnouncement[]): void {
-  try {
-    fs.writeFileSync(ANNOUNCEMENTS_FILE, JSON.stringify(list, null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving announcements file:", e);
-  }
+  memStore.announcements = list;
+  writeWritableJson(ANNOUNCEMENTS_FILE, list);
 }
 
 function loadAuditLogs(): ServerAuditLog[] {
-  try {
-    if (fs.existsSync(AUDIT_LOGS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(AUDIT_LOGS_FILE, "utf-8"));
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch (e) {}
-  return [];
+  if (Array.isArray(memStore.auditLogs)) return memStore.auditLogs;
+  const parsed = readSeedOrWritableJson<ServerAuditLog[]>(AUDIT_LOGS_FILE, []);
+  memStore.auditLogs = Array.isArray(parsed) ? parsed : [];
+  return memStore.auditLogs;
 }
 
 function saveAuditLogs(logs: ServerAuditLog[]): void {
-  try {
-    fs.writeFileSync(AUDIT_LOGS_FILE, JSON.stringify(logs.slice(0, 300), null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving audit logs file:", e);
-  }
+  const sliced = logs.slice(0, 300);
+  memStore.auditLogs = sliced;
+  writeWritableJson(AUDIT_LOGS_FILE, sliced);
 }
 
 function recordAuditLog(entry: Omit<ServerAuditLog, "id" | "timestamp">): ServerAuditLog {
@@ -5343,21 +5418,16 @@ interface ServerActivityLog {
 }
 
 function loadEmailLogs(): ServerEmailLog[] {
-  try {
-    if (fs.existsSync(EMAIL_LOGS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(EMAIL_LOGS_FILE, "utf-8"));
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
-  return [];
+  if (Array.isArray(memStore.emailLogs)) return memStore.emailLogs;
+  const parsed = readSeedOrWritableJson<ServerEmailLog[]>(EMAIL_LOGS_FILE, []);
+  memStore.emailLogs = Array.isArray(parsed) ? parsed : [];
+  return memStore.emailLogs;
 }
 
 function saveEmailLogs(logs: ServerEmailLog[]): void {
-  try {
-    fs.writeFileSync(EMAIL_LOGS_FILE, JSON.stringify(logs.slice(0, 300), null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving email logs file:", e);
-  }
+  const sliced = logs.slice(0, 300);
+  memStore.emailLogs = sliced;
+  writeWritableJson(EMAIL_LOGS_FILE, sliced);
 }
 
 function recordEmailLog(entry: Omit<ServerEmailLog, "id" | "timestamp">): ServerEmailLog {
@@ -5373,21 +5443,16 @@ function recordEmailLog(entry: Omit<ServerEmailLog, "id" | "timestamp">): Server
 }
 
 function loadActivityLogs(): ServerActivityLog[] {
-  try {
-    if (fs.existsSync(ACTIVITY_LOGS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(ACTIVITY_LOGS_FILE, "utf-8"));
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
-  return [];
+  if (Array.isArray(memStore.activityLogs)) return memStore.activityLogs;
+  const parsed = readSeedOrWritableJson<ServerActivityLog[]>(ACTIVITY_LOGS_FILE, []);
+  memStore.activityLogs = Array.isArray(parsed) ? parsed : [];
+  return memStore.activityLogs;
 }
 
 function saveActivityLogs(logs: ServerActivityLog[]): void {
-  try {
-    fs.writeFileSync(ACTIVITY_LOGS_FILE, JSON.stringify(logs.slice(0, 500), null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving activity logs file:", e);
-  }
+  const sliced = logs.slice(0, 500);
+  memStore.activityLogs = sliced;
+  writeWritableJson(ACTIVITY_LOGS_FILE, sliced);
 }
 
 function recordActivityLog(entry: Omit<ServerActivityLog, "id" | "timestamp">): ServerActivityLog {
@@ -5403,42 +5468,33 @@ function recordActivityLog(entry: Omit<ServerActivityLog, "id" | "timestamp">): 
 }
 
 function loadPlatformSettings(): ServerPlatformSettings {
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-      if (parsed && typeof parsed === "object") {
-        return { ...DEFAULT_PLATFORM_SETTINGS, ...parsed };
-      }
-    }
-  } catch (e) {}
-  savePlatformSettings(DEFAULT_PLATFORM_SETTINGS);
-  return DEFAULT_PLATFORM_SETTINGS;
+  if (memStore.platformSettings) return memStore.platformSettings;
+  const parsed = readSeedOrWritableJson<Partial<ServerPlatformSettings> | null>(SETTINGS_FILE, null);
+  if (parsed && typeof parsed === "object") {
+    memStore.platformSettings = { ...DEFAULT_PLATFORM_SETTINGS, ...parsed };
+    return memStore.platformSettings;
+  }
+  memStore.platformSettings = { ...DEFAULT_PLATFORM_SETTINGS };
+  savePlatformSettings(memStore.platformSettings);
+  return memStore.platformSettings;
 }
 
 function savePlatformSettings(settings: ServerPlatformSettings): void {
-  try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving platform settings file:", e);
-  }
+  memStore.platformSettings = settings;
+  writeWritableJson(SETTINGS_FILE, settings);
 }
 
 function loadDeletedUserIds(): string[] {
-  try {
-    if (fs.existsSync(DELETED_USERS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DELETED_USERS_FILE, "utf-8"));
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
-  return [];
+  if (Array.isArray(memStore.deletedUserIds)) return memStore.deletedUserIds;
+  const parsed = readSeedOrWritableJson<string[]>(DELETED_USERS_FILE, []);
+  memStore.deletedUserIds = Array.isArray(parsed) ? parsed : [];
+  return memStore.deletedUserIds;
 }
 
 function saveDeletedUserIds(ids: string[]): void {
-  try {
-    fs.writeFileSync(DELETED_USERS_FILE, JSON.stringify(Array.from(new Set(ids)), null, 2), "utf-8");
-  } catch (e) {
-    console.warn("Error saving deleted users file:", e);
-  }
+  const unique = Array.from(new Set(ids));
+  memStore.deletedUserIds = unique;
+  writeWritableJson(DELETED_USERS_FILE, unique);
 }
 
 function pickBestGameProfile(a: any, b: any) {
@@ -5569,9 +5625,17 @@ app.post("/api/users/sync", (req, res) => {
 // 3. REGISTER NEW USER
 app.post("/api/users/register", (req, res) => {
   try {
-    const newUser = req.body as ServerStoredUser;
+    const newUser = req.body as ServerStoredUser & { createdByAdmin?: boolean };
     if (!newUser || !newUser.email || !newUser.passwordHash) {
       return res.status(400).json({ success: false, error: "Missing required account fields" });
+    }
+
+    const settings = loadPlatformSettings();
+    if (!newUser.createdByAdmin && settings.allowPublicSignup === false) {
+      return res.status(403).json({
+        success: false,
+        error: "New public registrations are currently paused by the Master Administrator.",
+      });
     }
 
     const serverUsers = loadServerUsers();
@@ -6477,6 +6541,7 @@ app.get("/api/admin/overview", (_req, res) => {
       { name: "email_logs.json", filePath: EMAIL_LOGS_FILE },
       { name: "activity_logs.json", filePath: ACTIVITY_LOGS_FILE },
       { name: "platform_settings.json", filePath: SETTINGS_FILE },
+      { name: "uploaded_notes.json", filePath: UPLOADED_NOTES_FILE },
     ].map((f) => {
       try {
         return {
@@ -7166,6 +7231,7 @@ app.get("/api/admin/backup", (_req, res) => {
       auditLogs: loadAuditLogs(),
       emailLogs: loadEmailLogs(),
       activityLogs: loadActivityLogs(),
+      uploadedNotes: loadUploadedNotes(),
     };
     recordAuditLog({
       category: "system",
@@ -7209,6 +7275,9 @@ app.post("/api/admin/restore", (req, res) => {
     if (Array.isArray(snapshot.activityLogs)) {
       saveActivityLogs(snapshot.activityLogs);
     }
+    if (Array.isArray(snapshot.uploadedNotes)) {
+      saveUploadedNotes(snapshot.uploadedNotes);
+    }
 
     recordAuditLog({
       category: "system",
@@ -7224,70 +7293,204 @@ app.post("/api/admin/restore", (req, res) => {
   }
 });
 
-const UPLOADED_NOTES_FILE = path.join(process.cwd(), "data", "uploaded_notes.json");
-
 function loadUploadedNotes(): any[] {
-  try {
-    if (fs.existsSync(UPLOADED_NOTES_FILE)) {
-      return JSON.parse(fs.readFileSync(UPLOADED_NOTES_FILE, "utf-8"));
-    }
-  } catch {}
-  return [];
+  if (Array.isArray(memStore.uploadedNotes)) {
+    return memStore.uploadedNotes;
+  }
+  const raw = readSeedOrWritableJson<any[]>(UPLOADED_NOTES_FILE, []);
+  const cleaned = Array.isArray(raw)
+    ? raw.filter((n) => n && n.id && !(typeof n.fileUrl === "string" && n.fileUrl.startsWith("blob:")))
+    : [];
+  memStore.uploadedNotes = cleaned;
+  return memStore.uploadedNotes;
 }
 
 function saveUploadedNotes(notes: any[]): void {
-  try {
-    if (!fs.existsSync(path.dirname(UPLOADED_NOTES_FILE))) {
-      fs.mkdirSync(path.dirname(UPLOADED_NOTES_FILE), { recursive: true });
-    }
-    fs.writeFileSync(UPLOADED_NOTES_FILE, JSON.stringify(notes, null, 2), "utf-8");
-  } catch {}
+  const cleaned = notes.filter((n) => n && n.id && !(typeof n.fileUrl === "string" && n.fileUrl.startsWith("blob:")));
+  memStore.uploadedNotes = cleaned;
+  writeWritableJson(UPLOADED_NOTES_FILE, cleaned);
 }
 
 app.get("/api/uploaded-notes", (_req, res) => {
   res.json({ success: true, notes: loadUploadedNotes() });
 });
 
+app.get("/api/uploaded-notes/:id/file", (req, res) => {
+  try {
+    const { id } = req.params;
+    let dataUrl = memStore.pdfDataUrls.get(id);
+    if (!dataUrl) {
+      const diskPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${id.replace(/[^a-zA-Z0-9_-]/g, "_")}.b64`);
+      if (fs.existsSync(diskPath)) {
+        dataUrl = fs.readFileSync(diskPath, "utf-8");
+        memStore.pdfDataUrls.set(id, dataUrl);
+      }
+    }
+    if (!dataUrl) {
+      return res.status(404).json({ success: false, error: "PDF file binary not found on server." });
+    }
+    const commaIdx = dataUrl.indexOf(",");
+    const base64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    const buffer = Buffer.from(base64, "base64");
+    const note = loadUploadedNotes().find((n) => n.id === id);
+    const filename = String(note?.fileName || `${note?.title || id}.pdf`).replace(/["\r\n]/g, "");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to serve PDF binary" });
+  }
+});
+
 app.post("/api/uploaded-notes", (req, res) => {
   try {
-    const { title, description, subject, grade, fileSizeKb, pageCount, fileUrl, tags } = req.body || {};
-    if (!title || !fileUrl) {
-      return res.status(400).json({ success: false, error: "Title and fileUrl are required" });
-    }
-    const notes = loadUploadedNotes();
-    const newDoc = {
-      id: `uploaded-pdf-${Date.now()}`,
+    const {
+      id,
       title,
-      description: description || "Uploaded study notes",
-      subject: subject || "Physics",
-      grade: grade || "Class 12",
-      category: "Complete Study Guide",
-      pageCount: Number(pageCount) || 12,
+      description,
+      subject,
+      grade,
+      category,
+      fileName,
+      pageCount,
+      fileSizeKb,
+      fileUrl,
+      storageType,
+      chunkCount,
+      storagePath,
+      uploadedBy,
+      tags,
+      dataUrl,
+    } = req.body || {};
+
+    if (!title || (!fileUrl && !dataUrl)) {
+      return res.status(400).json({ success: false, error: "Title and PDF source are required" });
+    }
+
+    const noteId = String(id || `uploaded-pdf-${Date.now()}`);
+    let resolvedFileUrl = String(fileUrl || "");
+
+    if (typeof dataUrl === "string" && dataUrl.startsWith("data:")) {
+      memStore.pdfDataUrls.set(noteId, dataUrl);
+      try {
+        if (!fs.existsSync(UPLOADED_PDF_BLOBS_DIR)) {
+          fs.mkdirSync(UPLOADED_PDF_BLOBS_DIR, { recursive: true });
+        }
+        fs.writeFileSync(
+          path.join(UPLOADED_PDF_BLOBS_DIR, `${noteId.replace(/[^a-zA-Z0-9_-]/g, "_")}.b64`),
+          dataUrl,
+          "utf-8"
+        );
+      } catch {}
+      if (!resolvedFileUrl || resolvedFileUrl.startsWith("blob:")) {
+        resolvedFileUrl = `/api/uploaded-notes/${noteId}/file`;
+      }
+    }
+
+    const notes = loadUploadedNotes().filter((n) => n.id !== noteId);
+    const newDoc = {
+      id: noteId,
+      title: String(title).trim(),
+      description: String(description || `Original PDF notes for ${subject || "Study"} (${grade || "All Levels"})`),
+      subject: String(subject || "Physics"),
+      grade: String(grade || "12th Class"),
+      category: String(category || "Complete Study Guide"),
+      fileName: String(fileName || `${title}.pdf`),
+      pageCount: Number(pageCount) || 15,
       fileSizeKb: Number(fileSizeKb) || 1024,
-      downloadCount: 1,
+      downloadCount: 0,
       lastUpdated: new Date().toISOString().split("T")[0],
       isFeatured: true,
-      fileUrl,
-      tags: Array.isArray(tags) ? tags : [String(subject).toLowerCase(), String(grade).toLowerCase().replace(/\s+/g, "")],
+      fileUrl: resolvedFileUrl,
+      storageType: storageType || "server_api",
+      chunkCount: Number(chunkCount) || 0,
+      storagePath: storagePath || undefined,
+      uploadedBy: uploadedBy || "admin0011",
+      tags: Array.isArray(tags)
+        ? tags
+        : [String(subject || "study").toLowerCase(), String(grade || "all").toLowerCase().replace(/\s+/g, "")],
       sections: [
         {
           heading: "Uploaded PDF Study Notes",
-          subheading: title,
+          subheading: String(title).trim(),
           content: [
             `• Document Title: ${title}`,
-            `• Grade Level: ${grade}`,
-            `• Subject: ${subject}`,
-            `• File Source: ${fileUrl}`,
-            `• Access: Available for direct download and reading across all devices.`,
+            `• Grade Level: ${grade || "12th Class"}`,
+            `• Subject: ${subject || "Physics"}`,
+            `• Access: Available verbatim for preview & direct PDF download.`,
           ],
         },
       ],
     };
     notes.unshift(newDoc);
     saveUploadedNotes(notes);
+
+    recordAuditLog({
+      category: "admin",
+      action: "PDF_NOTE_UPLOADED",
+      actor: String(uploadedBy || "admin0011"),
+      target: `${newDoc.subject} (${newDoc.grade})`,
+      details: `Uploaded verbatim PDF "${newDoc.title}" (${newDoc.fileSizeKb} KB)`,
+      status: "success",
+    });
+
     return res.json({ success: true, note: newDoc });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Failed to upload note" });
+  }
+});
+
+app.patch("/api/uploaded-notes/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { incrementDownload, title, description, subject, grade } = req.body || {};
+    const notes = loadUploadedNotes();
+    const idx = notes.findIndex((n) => n.id === id);
+    if (idx === -1) {
+      return res.json({ success: true, note: null });
+    }
+    const current = notes[idx];
+    const updated = {
+      ...current,
+      ...(incrementDownload ? { downloadCount: Number(current.downloadCount || 0) + 1 } : {}),
+      ...(typeof title === "string" && title.trim() ? { title: title.trim() } : {}),
+      ...(typeof description === "string" ? { description } : {}),
+      ...(typeof subject === "string" && subject.trim() ? { subject: subject.trim() } : {}),
+      ...(typeof grade === "string" && grade.trim() ? { grade: grade.trim() } : {}),
+    };
+    notes[idx] = updated;
+    saveUploadedNotes(notes);
+    return res.json({ success: true, note: updated });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to update PDF note" });
+  }
+});
+
+app.delete("/api/uploaded-notes/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const notes = loadUploadedNotes();
+    const removed = notes.find((n) => n.id === id);
+    const remaining = notes.filter((n) => n.id !== id);
+    saveUploadedNotes(remaining);
+    memStore.pdfDataUrls.delete(id);
+    try {
+      const diskPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${id.replace(/[^a-zA-Z0-9_-]/g, "_")}.b64`);
+      if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+    } catch {}
+
+    recordAuditLog({
+      category: "admin",
+      action: "PDF_NOTE_DELETED",
+      actor: "admin0011",
+      target: removed?.title || id,
+      details: `Deleted uploaded PDF note "${removed?.title || id}"`,
+      status: "warning",
+    });
+
+    return res.json({ success: true, notes: remaining });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to delete PDF note" });
   }
 });
 
@@ -7296,6 +7499,7 @@ export default app;
 // Start Server with Vite Middleware in Dev or Static in Production
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: "spa",

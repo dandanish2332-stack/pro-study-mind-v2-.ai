@@ -1,0 +1,277 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdminToken() {
+      return isVerifiedUser() && request.auth.token.email == 'dandanish2332@gmail.com';
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'dandanish2332@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && (
+        request.auth.uid == userId ||
+        (exists(/databases/$(database)/documents/users/$(userId)) &&
+          get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid)
+      );
+    }
+
+    // Entity Validation Blueprints
+    function isValidAdminMarker(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+        data.keys().hasOnly(['uid', 'email', 'role']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.role == 'admin';
+    }
+
+    function isValidPlatformSettings(data) {
+      return data.keys().hasAll([
+          'platformName', 'supportEmail', 'allowPublicSignup',
+          'aiTutorEnabled', 'adPlacementsEnabled', 'defaultDailyGoalHours',
+          'maintenanceBanner', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'platformName', 'supportEmail', 'allowPublicSignup',
+          'aiTutorEnabled', 'adPlacementsEnabled', 'defaultDailyGoalHours',
+          'maintenanceBanner', 'updatedAt'
+        ]) &&
+        data.platformName is string && data.platformName.size() >= 1 && data.platformName.size() <= 120 &&
+        data.supportEmail is string && data.supportEmail.size() >= 3 && data.supportEmail.size() <= 160 &&
+        data.allowPublicSignup is bool &&
+        data.aiTutorEnabled is bool &&
+        data.adPlacementsEnabled is bool &&
+        data.defaultDailyGoalHours is number && data.defaultDailyGoalHours >= 1 && data.defaultDailyGoalHours <= 16 &&
+        data.maintenanceBanner is string && data.maintenanceBanner.size() <= 500 &&
+        data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['id', 'title', 'message', 'type', 'targetGrade', 'createdBy', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'title', 'message', 'type', 'targetGrade', 'createdBy', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 2000 &&
+        data.type in ['urgent', 'info', 'sync', 'security', 'reminder'] &&
+        data.targetGrade is string && data.targetGrade.size() >= 1 && data.targetGrade.size() <= 80 &&
+        data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 120 &&
+        data.createdAt is string && data.createdAt.size() >= 1 && data.createdAt.size() <= 64;
+    }
+
+    function isValidUploadedNote(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'description', 'subject', 'grade', 'category',
+          'fileName', 'pageCount', 'fileSizeKb', 'downloadCount',
+          'lastUpdated', 'fileUrl', 'storageType'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'subject', 'grade', 'category',
+          'fileName', 'pageCount', 'fileSizeKb', 'downloadCount',
+          'lastUpdated', 'fileUrl', 'storageType', 'chunkCount', 'storagePath', 'uploadedBy', 'tags'
+        ]) &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.description is string && data.description.size() <= 1000 &&
+        data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80 &&
+        data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 80 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 240 &&
+        data.pageCount is number && data.pageCount >= 1 &&
+        data.fileSizeKb is number && data.fileSizeKb >= 0 &&
+        data.downloadCount is number && data.downloadCount >= 0 &&
+        data.lastUpdated is string && data.lastUpdated.size() >= 1 && data.lastUpdated.size() <= 64 &&
+        data.fileUrl is string && data.fileUrl.size() <= 2000 &&
+        data.storageType in ['firebase_storage', 'firestore_chunks', 'static_asset', 'server_api'] &&
+        (!('chunkCount' in data) || (data.chunkCount is number && data.chunkCount >= 0 && data.chunkCount <= 100)) &&
+        (!('storagePath' in data) || (data.storagePath is string && data.storagePath.size() <= 500)) &&
+        (!('uploadedBy' in data) || (data.uploadedBy is string && data.uploadedBy.size() <= 128)) &&
+        (!('tags' in data) || (data.tags is list && data.tags.size() <= 12 && (data.tags.size() == 0 || data.tags[0] is string)));
+    }
+
+    function isValidUploadedPdfChunk(data) {
+      return data.keys().hasAll(['noteId', 'chunkIndex', 'totalChunks', 'data']) &&
+        data.keys().hasOnly(['noteId', 'chunkIndex', 'totalChunks', 'data']) &&
+        isValidId(data.noteId) &&
+        data.chunkIndex is number && data.chunkIndex >= 0 &&
+        data.totalChunks is number && data.totalChunks >= 1 && data.totalChunks <= 100 &&
+        data.data is string && data.data.size() >= 1 && data.data.size() <= 750000;
+    }
+
+    function isValidStudentProfile(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'grade', 'provider', 'role', 'joinedDate', 'lastLogin']) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'name', 'email', 'grade', 'targetExam', 'schoolOrCollege',
+          'favoriteSubject', 'dailyGoalHours', 'avatarColor', 'avatarUrl',
+          'provider', 'role', 'isAdmin', 'joinedDate', 'lastLogin', 'lastActiveTimestamp', 'bio', 'phone'
+        ]) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.email is string && data.email.size() >= 1 && data.email.size() <= 160 &&
+        data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 80 &&
+        data.provider in ['email', 'google', 'guest'] &&
+        data.role in ['student', 'admin'] &&
+        data.joinedDate is string && data.joinedDate.size() >= 1 && data.joinedDate.size() <= 64 &&
+        data.lastLogin is string && data.lastLogin.size() >= 1 && data.lastLogin.size() <= 64 &&
+        (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
+        (!('targetExam' in data) || (data.targetExam is string && data.targetExam.size() <= 160)) &&
+        (!('schoolOrCollege' in data) || (data.schoolOrCollege is string && data.schoolOrCollege.size() <= 160)) &&
+        (!('favoriteSubject' in data) || (data.favoriteSubject is string && data.favoriteSubject.size() <= 80)) &&
+        (!('dailyGoalHours' in data) || (data.dailyGoalHours is number && data.dailyGoalHours >= 1 && data.dailyGoalHours <= 16)) &&
+        (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 80)) &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500)) &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 500)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 40)) &&
+        (!('isAdmin' in data) || data.isAdmin is bool) &&
+        (!('lastActiveTimestamp' in data) || data.lastActiveTimestamp is number);
+    }
+
+    function isValidStudentPrivateState(data) {
+      return data.keys().hasAll(['userId', 'lastUpdated']) &&
+        data.keys().hasOnly([
+          'userId', 'lastUpdated', 'tasks', 'files', 'calendar',
+          'downloaded_pdf_ids', 'custom_pdfs', 'saved_lectures', 'watched_lectures',
+          'dict_bookmarks', 'dict_recents', 'dict_custom_words',
+          'games_profile', 'game_profile', 'study_streak',
+          'quiz_history', 'notifications', 'voice_history', 'chat_history'
+        ]) &&
+        isValidId(data.userId) &&
+        data.lastUpdated is number &&
+        (!('study_streak' in data) || data.study_streak is number) &&
+        (!('tasks' in data) || (data.tasks is list && data.tasks.size() <= 300)) &&
+        (!('files' in data) || (data.files is list && data.files.size() <= 300)) &&
+        (!('calendar' in data) || (data.calendar is list && data.calendar.size() <= 300)) &&
+        (!('notifications' in data) || (data.notifications is list && data.notifications.size() <= 200));
+    }
+
+    // Connection health check document
+    match /test/{docId} {
+      allow get: if isValidId(docId) && docId == 'connection';
+    }
+
+    // Admin registry
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isAdminToken() || (isSignedIn() && request.auth.uid == adminId));
+      allow list: if isAdminToken();
+      allow create: if isAdminToken() && isValidId(adminId) && isValidAdminMarker(incoming()) && incoming().uid == adminId;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Global platform governance settings (non-PII)
+    match /platform_settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'global';
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(settingId) && settingId == 'global' && isValidPlatformSettings(incoming());
+      allow update: if isAdmin() && isValidId(settingId) && settingId == 'global' &&
+        isValidPlatformSettings(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'platformName', 'supportEmail', 'allowPublicSignup',
+          'aiTutorEnabled', 'adPlacementsEnabled', 'defaultDailyGoalHours',
+          'maintenanceBanner', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // Broadcast announcements (non-PII)
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId);
+      allow list: if existing().title is string && existing().targetGrade is string;
+      allow create: if isAdmin() && isValidId(announcementId) && isValidAnnouncement(incoming());
+      allow update: if isAdmin() && isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'message', 'type', 'targetGrade']);
+      allow delete: if isAdmin() && isValidId(announcementId);
+    }
+
+    // Admin-uploaded PDF study notes metadata (non-PII)
+    match /uploaded_notes/{noteId} {
+      allow get: if isValidId(noteId);
+      allow list: if existing().subject is string && existing().grade is string;
+      allow create: if isAdmin() && isValidId(noteId) && isValidUploadedNote(incoming()) && incoming().id == noteId;
+      allow update: if isAdmin() && isValidId(noteId) &&
+        isValidUploadedNote(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'description', 'subject', 'grade', 'category',
+          'downloadCount', 'lastUpdated', 'fileUrl', 'storageType', 'chunkCount', 'storagePath', 'tags'
+        ]);
+      allow delete: if isAdmin() && isValidId(noteId);
+    }
+
+    // Chunked verbatim PDF bytes stored in Firestore (non-PII)
+    match /uploaded_pdf_chunks/{chunkId} {
+      allow get: if isValidId(chunkId);
+      allow list: if existing().noteId is string && existing().chunkIndex is number;
+      allow create: if isAdmin() && isValidId(chunkId) && isValidUploadedPdfChunk(incoming()) &&
+        exists(/databases/$(database)/documents/uploaded_notes/$(incoming().noteId));
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(chunkId);
+    }
+
+    // Student user profiles (PII-isolated to owner or Master Admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && (isAdminToken() || existing().uid == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(userId) && isValidStudentProfile(incoming()) && (
+        isAdmin() || (incoming().uid == request.auth.uid && incoming().role == 'student' && (!('isAdmin' in incoming()) || incoming().isAdmin == false))
+      );
+      allow update: if isSignedIn() && isValidId(userId) && isValidStudentProfile(incoming()) && (
+        isAdmin() || (
+          isOwner(userId) &&
+          incoming().id == existing().id &&
+          incoming().role == existing().role &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'grade', 'targetExam', 'schoolOrCollege', 'favoriteSubject',
+            'dailyGoalHours', 'avatarColor', 'avatarUrl', 'bio', 'phone', 'lastLogin', 'lastActiveTimestamp'
+          ])
+        )
+      );
+      allow delete: if isAdmin() && isValidId(userId) && userId != 'admin0011';
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isSignedIn() && (isAdminToken() || existing().userId == request.auth.uid);
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(docId) && isValidStudentPrivateState(incoming()) && (
+          isAdmin() || (request.auth.uid == userId && incoming().userId == userId)
+        );
+        allow update: if isSignedIn() && isValidId(userId) && isValidId(docId) && isValidStudentPrivateState(incoming()) &&
+          incoming().userId == existing().userId && (
+            isAdmin() || request.auth.uid == userId
+          );
+        allow delete: if isAdmin() && isValidId(userId) && isValidId(docId);
+      }
+    }
+  }
+}

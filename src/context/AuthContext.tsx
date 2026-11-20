@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
-import { StudentUser, StudentGrade, AdminUserProgressDetails, StudentIsolatedData } from "../types";
+import { StudentUser, StudentGrade, AdminUserProgressDetails, StudentIsolatedData, ServerAnnouncement } from "../types";
 import { getUserItem, removeUserItem, setUserItem, logUserActivityToServer } from "../utils/userStorage";
 import { googleLogout } from "../utils/googleAuth";
+import { safeJsonFetch } from "../utils/safeFetch";
+import { fetchPlatformSettingsFromFirestore, syncAnnouncementToFirestore } from "../services/cloudSyncService";
 
 export interface StoredAccount extends StudentUser {
   passwordHash: string;
@@ -687,19 +689,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const syncWithServer = useCallback(async (explicitUserId?: string, forceServerAuthoritative = false) => {
     try {
       if (forceServerAuthoritative) {
-        const res = await fetch("/api/users/all");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && Array.isArray(data.users)) {
-            localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.users));
-            if (data.states && typeof data.states === "object") {
-              for (const [uid, uState] of Object.entries<any>(data.states)) {
-                applyServerUserState(uid, uState);
-                notifyUserStateUpdated(uid);
-              }
+        const res = await safeJsonFetch<{ success: boolean; users?: StoredAccount[]; states?: Record<string, any> }>("/api/users/all");
+        if (res.ok && res.data?.success && Array.isArray(res.data.users)) {
+          localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(res.data.users));
+          if (res.data.states && typeof res.data.states === "object") {
+            for (const [uid, uState] of Object.entries<any>(res.data.states)) {
+              applyServerUserState(uid, uState);
+              notifyUserStateUpdated(uid);
             }
-            setTick((prev) => prev + 1);
           }
+          setTick((prev) => prev + 1);
         }
         return;
       }
@@ -714,7 +713,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      const res = await fetch("/api/users/sync", {
+      const res = await safeJsonFetch<{
+        success: boolean;
+        users?: StoredAccount[];
+        deletedUserIds?: string[];
+        userStates?: Record<string, any>;
+      }>("/api/users/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -723,40 +727,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.users)) {
-          const deletedSet = new Set<string>(
-            Array.isArray(data.deletedUserIds) ? data.deletedUserIds : []
-          );
-          const mergedMap = new Map<string, StoredAccount>();
-          localUsers.forEach((u) => {
-            if (!deletedSet.has(u.id)) {
-              mergedMap.set(u.id, u);
-            }
-          });
-          data.users.forEach((su: StoredAccount) => {
-            if (deletedSet.has(su.id)) return;
-            const existing = mergedMap.get(su.id);
-            if (!existing || (su.lastActiveTimestamp || 0) >= (existing.lastActiveTimestamp || 0)) {
-              mergedMap.set(su.id, { ...existing, ...su });
-            }
-          });
-          const mergedList = Array.from(mergedMap.values());
-          localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(mergedList));
+      if (res.ok && res.data?.success && Array.isArray(res.data.users)) {
+        const data = res.data;
+        const deletedSet = new Set<string>(
+          Array.isArray(data.deletedUserIds) ? data.deletedUserIds : []
+        );
+        const mergedMap = new Map<string, StoredAccount>();
+        localUsers.forEach((u) => {
+          if (!deletedSet.has(u.id)) {
+            mergedMap.set(u.id, u);
+          }
+        });
+        (data.users || []).forEach((su: StoredAccount) => {
+          if (deletedSet.has(su.id)) return;
+          const existing = mergedMap.get(su.id);
+          if (!existing || (su.lastActiveTimestamp || 0) >= (existing.lastActiveTimestamp || 0)) {
+            mergedMap.set(su.id, { ...existing, ...su });
+          }
+        });
+        const mergedList = Array.from(mergedMap.values());
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(mergedList));
 
-          if (data.userStates && typeof data.userStates === "object") {
-            for (const [uid, uState] of Object.entries<any>(data.userStates)) {
-              if (!deletedSet.has(uid)) {
-                applyServerUserState(uid, uState);
-              }
-            }
-            if (activeUserId && data.userStates[activeUserId]) {
-              notifyUserStateUpdated(activeUserId);
+        if (data.userStates && typeof data.userStates === "object") {
+          for (const [uid, uState] of Object.entries<any>(data.userStates)) {
+            if (!deletedSet.has(uid)) {
+              applyServerUserState(uid, uState);
             }
           }
-          setTick((prev) => prev + 1);
+          if (activeUserId && data.userStates[activeUserId]) {
+            notifyUserStateUpdated(activeUserId);
+          }
         }
+        setTick((prev) => prev + 1);
       }
     } catch {
       // Quiet fail on network interruption
@@ -966,25 +968,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Cross-device fallback: if account was registered on another device/browser, query server
     if (!matched) {
       try {
-        const res = await fetch("/api/users/all");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && Array.isArray(data.users)) {
-            localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.users));
-            if (data.states && typeof data.states === "object") {
-              for (const [uid, uState] of Object.entries<any>(data.states)) {
-                applyServerUserState(uid, uState);
-              }
+        const res = await safeJsonFetch<{ success: boolean; users?: StoredAccount[]; states?: Record<string, any> }>("/api/users/all");
+        if (res.ok && res.data?.success && Array.isArray(res.data.users)) {
+          localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(res.data.users));
+          if (res.data.states && typeof res.data.states === "object") {
+            for (const [uid, uState] of Object.entries<any>(res.data.states)) {
+              applyServerUserState(uid, uState);
             }
-            users = data.users;
-            matched = users.find(
-              (u) =>
-                (u.email.toLowerCase() === trimmedInput || u.id.toLowerCase() === trimmedInput) &&
-                u.passwordHash === trimmedPassword
-            );
           }
+          users = res.data.users;
+          matched = users.find(
+            (u) =>
+              (u.email.toLowerCase() === trimmedInput || u.id.toLowerCase() === trimmedInput) &&
+              u.passwordHash === trimmedPassword
+          );
         }
-      } catch (e) {
+      } catch {
         // network error, continue with local check
       }
     }
@@ -1075,16 +1074,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
-    // Respect server-side signup policy if disabled by Master Admin
+    // Respect server-side & Firestore signup policy if disabled by Master Admin
+    let defaultDailyGoalHours = 4;
     try {
-      const policyRes = await fetch("/api/platform-settings");
-      if (policyRes.ok) {
-        const policyData = await policyRes.json();
-        if (policyData?.settings && policyData.settings.allowPublicSignup === false) {
+      const [policyRes, firestoreSettings] = await Promise.all([
+        safeJsonFetch<{ success: boolean; settings?: any }>("/api/platform-settings"),
+        fetchPlatformSettingsFromFirestore(),
+      ]);
+      const apiSettings = policyRes.ok ? policyRes.data?.settings : null;
+      const effectiveSettings =
+        apiSettings && firestoreSettings
+          ? new Date(firestoreSettings.updatedAt || 0).getTime() > new Date(apiSettings.updatedAt || 0).getTime()
+            ? firestoreSettings
+            : apiSettings
+          : firestoreSettings || apiSettings;
+
+      if (effectiveSettings) {
+        if (effectiveSettings.allowPublicSignup === false) {
           return {
             success: false,
             error: "New public registrations are currently paused by the Administrator. Please contact support.",
           };
+        }
+        if (effectiveSettings.defaultDailyGoalHours) {
+          defaultDailyGoalHours = Number(effectiveSettings.defaultDailyGoalHours) || 4;
         }
       }
     } catch {
@@ -1107,6 +1120,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       passwordHash: trimmedPassword,
       grade,
       targetExam: targetExam || "Annual Board Examinations 2026",
+      dailyGoalHours: defaultDailyGoalHours,
       avatarColor: randomColor,
       provider: "email",
       joinedDate: new Date().toISOString().split("T")[0],
@@ -1121,11 +1135,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Persist new user immediately to server database
     try {
-      await fetch("/api/users/register", {
+      const regRes = await safeJsonFetch<{ success: boolean; error?: string }>("/api/users/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newAccount),
       });
+      if (!regRes.ok && regRes.status === 403) {
+        return {
+          success: false,
+          error: regRes.error || "New public registrations are currently paused by the Administrator.",
+        };
+      }
     } catch (e) {
       console.warn("Could not register on server immediately:", e);
     }
@@ -1136,6 +1156,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: newAccount.email,
       grade: newAccount.grade,
       targetExam: newAccount.targetExam,
+      dailyGoalHours: newAccount.dailyGoalHours,
       avatarColor: newAccount.avatarColor,
       avatarUrl: newAccount.avatarUrl,
       provider: "email",
@@ -1160,15 +1181,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     rememberMe = true
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch("/api/users/google-auth", {
+      const res = await safeJsonFetch<{
+        success: boolean;
+        error?: string;
+        user?: StoredAccount;
+        allUsers?: StoredAccount[];
+        state?: Record<string, any>;
+      }>("/api/users/google-auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(profile),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success || !data.user) {
-        return { success: false, error: data.error || "Could not complete Google authentication." };
+      if (!res.ok || !res.data?.success || !res.data.user) {
+        return { success: false, error: res.error || res.data?.error || "Could not complete Google authentication." };
       }
+      const data = res.data;
 
       const serverUser: StoredAccount = data.user;
       if (Array.isArray(data.allUsers)) {
@@ -1438,15 +1465,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const res = await fetch("/api/users/delete", {
+      const res = await safeJsonFetch<{ success: boolean; allUsers?: StoredAccount[]; error?: string }>("/api/users/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to delete user on server." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to delete user on server." };
       }
+      const data = res.data;
 
       if (Array.isArray(data.allUsers)) {
         localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
@@ -1519,17 +1546,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     try {
-      const res = await fetch("/api/users/update", {
+      const res = await safeJsonFetch<{ success: boolean; allUsers?: StoredAccount[]; error?: string }>("/api/users/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, updates }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to update account on server." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to update account on server." };
       }
-      if (Array.isArray(data.allUsers)) {
-        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
+      if (Array.isArray(res.data.allUsers)) {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(res.data.allUsers));
       } else {
         users[idx] = updatedAccount;
         localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
@@ -1612,17 +1638,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     try {
-      const res = await fetch("/api/users/register", {
+      const res = await safeJsonFetch<{ success: boolean; allUsers?: StoredAccount[]; error?: string }>("/api/users/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newAccount),
+        body: JSON.stringify({ ...newAccount, createdByAdmin: true }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to register account on server." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to register account on server." };
       }
-      if (Array.isArray(data.allUsers)) {
-        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(data.allUsers));
+      if (Array.isArray(res.data.allUsers)) {
+        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(res.data.allUsers));
       } else {
         localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify([...users, newAccount]));
       }
@@ -1638,18 +1663,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     task: any
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/tasks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(task),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to assign task on server." };
+      const res = await safeJsonFetch<{ success: boolean; tasks?: any[]; task?: any; error?: string }>(
+        `/api/admin/users/${encodeURIComponent(userId)}/tasks`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(task),
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to assign task on server." };
       }
+      const data = res.data;
       if (Array.isArray(data.tasks)) {
         setUserItem(userId, "tasks", data.tasks);
-      } else {
+      } else if (data.task) {
         const currentTasks = getUserItem<any[]>(userId, "tasks", []);
         setUserItem(userId, "tasks", [data.task, ...currentTasks]);
       }
@@ -1666,16 +1694,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     taskId: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(
+      const res = await safeJsonFetch<{ success: boolean; tasks?: any[]; error?: string }>(
         `/api/admin/users/${encodeURIComponent(userId)}/tasks/${encodeURIComponent(taskId)}/toggle`,
         { method: "PATCH" }
       );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to toggle task status." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to toggle task status." };
       }
-      if (Array.isArray(data.tasks)) {
-        setUserItem(userId, "tasks", data.tasks);
+      if (Array.isArray(res.data.tasks)) {
+        setUserItem(userId, "tasks", res.data.tasks);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);
@@ -1690,16 +1717,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     taskId: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(
+      const res = await safeJsonFetch<{ success: boolean; tasks?: any[]; error?: string }>(
         `/api/admin/users/${encodeURIComponent(userId)}/tasks/${encodeURIComponent(taskId)}`,
         { method: "DELETE" }
       );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to delete task on server." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to delete task on server." };
       }
-      if (Array.isArray(data.tasks)) {
-        setUserItem(userId, "tasks", data.tasks);
+      if (Array.isArray(res.data.tasks)) {
+        setUserItem(userId, "tasks", res.data.tasks);
       } else {
         const currentTasks = getUserItem<any[]>(userId, "tasks", []);
         setUserItem(userId, "tasks", currentTasks.filter((t) => t.id !== taskId));
@@ -1719,13 +1745,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: "Master administrator data is protected." };
     }
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/reset-state`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to reset student state." };
+      const res = await safeJsonFetch<{ success: boolean; error?: string }>(
+        `/api/admin/users/${encodeURIComponent(userId)}/reset-state`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to reset student state." };
       }
       const freshGp = {
         level: 1,
@@ -1833,18 +1861,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     xpAmount: number
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/grant-xp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ xpAmount }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to update student XP." };
+      const res = await safeJsonFetch<{ success: boolean; gameProfile?: any; error?: string }>(
+        `/api/admin/users/${encodeURIComponent(userId)}/grant-xp`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ xpAmount }),
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to update student XP." };
       }
-      if (data.gameProfile) {
-        setUserItem(userId, "game_profile", data.gameProfile);
-        setUserItem(userId, "games_profile", data.gameProfile);
+      if (res.data.gameProfile) {
+        setUserItem(userId, "game_profile", res.data.gameProfile);
+        setUserItem(userId, "games_profile", res.data.gameProfile);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);
@@ -1859,20 +1889,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     event: any
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/calendar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(event),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to schedule event on server." };
+      const res = await safeJsonFetch<{ success: boolean; calendar?: any[]; event?: any; error?: string }>(
+        `/api/admin/users/${encodeURIComponent(userId)}/calendar`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(event),
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to schedule event on server." };
       }
-      if (Array.isArray(data.calendar)) {
-        setUserItem(userId, "calendar", data.calendar);
-      } else {
+      if (Array.isArray(res.data.calendar)) {
+        setUserItem(userId, "calendar", res.data.calendar);
+      } else if (res.data.event) {
         const currentEvents = getUserItem<any[]>(userId, "calendar", []);
-        setUserItem(userId, "calendar", [...currentEvents, data.event]);
+        setUserItem(userId, "calendar", [...currentEvents, res.data.event]);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);
@@ -1887,16 +1919,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     eventId: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(
+      const res = await safeJsonFetch<{ success: boolean; calendar?: any[]; error?: string }>(
         `/api/admin/users/${encodeURIComponent(userId)}/calendar/${encodeURIComponent(eventId)}`,
         { method: "DELETE" }
       );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to delete calendar event." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to delete calendar event." };
       }
-      if (Array.isArray(data.calendar)) {
-        setUserItem(userId, "calendar", data.calendar);
+      if (Array.isArray(res.data.calendar)) {
+        setUserItem(userId, "calendar", res.data.calendar);
       } else {
         const currentEvents = getUserItem<any[]>(userId, "calendar", []);
         setUserItem(userId, "calendar", currentEvents.filter((e) => e.id !== eventId));
@@ -1915,29 +1946,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     type = "urgent",
     targetGrade = "All Levels"
   ): Promise<{ success: boolean; error?: string }> => {
+    const createdBy = currentUserRef.current?.name || "Danish (Master Admin)";
+    const fallbackAnn: ServerAnnouncement = {
+      id: `ann-${Date.now()}`,
+      title,
+      message,
+      type: (type as ServerAnnouncement["type"]) || "urgent",
+      targetGrade,
+      createdBy,
+      createdAt: new Date().toISOString(),
+    };
+
     try {
-      const res = await fetch("/api/admin/announcements", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          message,
-          type,
-          targetGrade,
-          createdBy: currentUserRef.current?.name || "Danish (Master Admin)",
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to publish announcement on server" };
+      const res = await safeJsonFetch<{ success: boolean; announcement?: ServerAnnouncement; error?: string }>(
+        "/api/admin/announcements",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title,
+            message,
+            type,
+            targetGrade,
+            createdBy,
+          }),
+        }
+      );
+
+      const annToSync = res.ok && res.data?.announcement ? res.data.announcement : fallbackAnn;
+      const syncedFirestore = await syncAnnouncementToFirestore(annToSync);
+
+      if ((!res.ok || !res.data?.success) && !syncedFirestore) {
+        return { success: false, error: res.error || res.data?.error || "Failed to publish announcement on server" };
       }
-      // Deliver immediately to active user's local notification store with canonical srv-<id> and mark seen
-      const annId = data.announcement?.id;
-      if (annId && currentUserRef.current?.id) {
+
+      if (currentUserRef.current?.id) {
         notifyUserStateUpdated(currentUserRef.current.id);
       }
       return { success: true };
     } catch (err: any) {
+      const syncedFirestore = await syncAnnouncementToFirestore(fallbackAnn);
+      if (syncedFirestore) {
+        if (currentUserRef.current?.id) {
+          notifyUserStateUpdated(currentUserRef.current.id);
+        }
+        return { success: true };
+      }
       return { success: false, error: err?.message || "Network error publishing announcement" };
     }
   };
@@ -1947,11 +2001,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       userId: string
     ): Promise<{ success: boolean; details?: StudentIsolatedData; error?: string }> => {
       try {
-        const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/full-details`);
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          return { success: false, error: data.error || "Failed to load server user details." };
+        const res = await safeJsonFetch<{
+          success: boolean;
+          user?: StoredAccount;
+          state?: Record<string, any>;
+          error?: string;
+        }>(`/api/admin/users/${encodeURIComponent(userId)}/full-details`);
+        if (!res.ok || !res.data?.success) {
+          return { success: false, error: res.error || res.data?.error || "Failed to load server user details." };
         }
+        const data = res.data;
         if (data.user) {
           const users = getRegisteredUsers();
           const idx = users.findIndex((u) => u.id === userId);
@@ -1980,17 +2039,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     payload: { title: string; message: string; type?: string }
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/notify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to send notification." };
+      const res = await safeJsonFetch<{ success: boolean; notifications?: any[]; error?: string }>(
+        `/api/admin/users/${encodeURIComponent(userId)}/notify`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to send notification." };
       }
-      if (Array.isArray(data.notifications)) {
-        setUserItem(userId, "notifications", data.notifications);
+      if (Array.isArray(res.data.notifications)) {
+        setUserItem(userId, "notifications", res.data.notifications);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);
@@ -2005,16 +2066,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     fileId: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(
+      const res = await safeJsonFetch<{ success: boolean; files?: any[]; error?: string }>(
         `/api/admin/users/${encodeURIComponent(userId)}/files/${encodeURIComponent(fileId)}`,
         { method: "DELETE" }
       );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to delete student file." };
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to delete student file." };
       }
-      if (Array.isArray(data.files)) {
-        setUserItem(userId, "files", data.files);
+      if (Array.isArray(res.data.files)) {
+        setUserItem(userId, "files", res.data.files);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);
@@ -2030,19 +2090,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     kind: "downloaded" | "custom"
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(
-        `/api/admin/users/${encodeURIComponent(userId)}/notes/${encodeURIComponent(pdfId)}?kind=${encodeURIComponent(kind)}`,
-        { method: "DELETE" }
-      );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to remove note record." };
+      const res = await safeJsonFetch<{
+        success: boolean;
+        downloadedPdfs?: string[];
+        customPdfs?: any[];
+        error?: string;
+      }>(`/api/admin/users/${encodeURIComponent(userId)}/notes/${encodeURIComponent(pdfId)}?kind=${encodeURIComponent(kind)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to remove note record." };
       }
-      if (Array.isArray(data.downloadedPdfs)) {
-        setUserItem(userId, "downloaded_pdf_ids", data.downloadedPdfs);
+      if (Array.isArray(res.data.downloadedPdfs)) {
+        setUserItem(userId, "downloaded_pdf_ids", res.data.downloadedPdfs);
       }
-      if (Array.isArray(data.customPdfs)) {
-        setUserItem(userId, "custom_pdfs", data.customPdfs);
+      if (Array.isArray(res.data.customPdfs)) {
+        setUserItem(userId, "custom_pdfs", res.data.customPdfs);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);
@@ -2063,17 +2126,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/study-stats`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to update study statistics." };
+      const res = await safeJsonFetch<{ success: boolean; state?: Record<string, any>; error?: string }>(
+        `/api/admin/users/${encodeURIComponent(userId)}/study-stats`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || "Failed to update study statistics." };
       }
-      if (data.state && typeof data.state === "object") {
-        applyServerUserState(userId, data.state, true);
+      if (res.data.state && typeof res.data.state === "object") {
+        applyServerUserState(userId, res.data.state, true);
       }
       notifyUserStateUpdated(userId);
       setTick((prev) => prev + 1);

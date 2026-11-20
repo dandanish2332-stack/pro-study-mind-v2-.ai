@@ -55,6 +55,7 @@ import {
   FileJson,
   Unlink,
   Link2,
+  Cloud,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useApp } from "../context/AppContext";
@@ -64,7 +65,21 @@ import {
   googleLogout,
   googleSignIn,
   initGoogleAuth,
+  isFirebaseAdminSessionActive,
 } from "../utils/googleAuth";
+import { safeJsonFetch } from "../utils/safeFetch";
+import {
+  UploadedPdfNoteRecord,
+  uploadPdfToCloud,
+  fetchAllPdfNotes,
+  deleteUploadedPdfNote,
+  downloadVerbatimPdf,
+  ensureAdminFirestoreDoc,
+  syncPlatformSettingsToFirestore,
+  deleteAnnouncementFromFirestore,
+  fetchAnnouncementsFromFirestore,
+  fetchPlatformSettingsFromFirestore,
+} from "../services/cloudSyncService";
 import {
   AdminAuditLog,
   AdminLogsSummary,
@@ -79,11 +94,14 @@ import {
   UserActivityLog,
 } from "../types";
 
+export type AdminSectionTab = "users" | "gmail" | "broadcasts" | "backend" | "logs" | "pdf-upload";
+
 interface AdminHubViewProps {
   setActiveTab?: (tab: string) => void;
+  initialSectionTab?: AdminSectionTab;
+  onConsumeInitialSection?: () => void;
 }
 
-type AdminSectionTab = "users" | "gmail" | "broadcasts" | "backend" | "logs" | "pdf-upload";
 type LogStreamTab = "audit" | "auth" | "activity" | "email" | "errors";
 
 const GRADE_OPTIONS: StudentGrade[] = [
@@ -101,6 +119,50 @@ const GRADE_OPTIONS: StudentGrade[] = [
   "All Levels (Master Admin)",
 ];
 
+const PDF_GRADE_OPTIONS: string[] = [
+  "12th Class",
+  "11th Class",
+  "Class 10",
+  "Class 9",
+  "10th Class",
+  "9th Class",
+  "Class 8",
+  "Class 7",
+  "Class 6",
+  "Class 5",
+  "Class 4",
+  "Class 3",
+  "Class 2",
+  "Class 1",
+  "Class 6th to 8th",
+  "Class 1st to 5th",
+  "MDCAT & ECAT Entry Test",
+  "General / College",
+  "All Levels",
+];
+
+const PDF_SUBJECT_OPTIONS: string[] = [
+  "Physics",
+  "Chemistry",
+  "Biology",
+  "Mathematics",
+  "Computer Science",
+  "General Science",
+  "English",
+  "Urdu",
+  "Pakistan Studies",
+  "General Study",
+];
+
+const PDF_CATEGORY_OPTIONS: string[] = [
+  "Complete Study Guide",
+  "Chapter Theory Notes",
+  "Solved Exercise & Numericals",
+  "Formula Sheet",
+  "Past Paper & Guess Paper",
+  "Board Exam Handout",
+];
+
 function formatUptime(seconds: number): string {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
@@ -116,7 +178,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
+export const AdminHubView: React.FC<AdminHubViewProps> = ({
+  setActiveTab,
+  initialSectionTab,
+  onConsumeInitialSection,
+}) => {
   const {
     isAdmin,
     dataVersion,
@@ -141,9 +207,16 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     deleteStudentPdfByAdmin,
     updateStudentStudyStatsByAdmin,
   } = useAuth();
-  const { refreshPlatformSettings, syncAnnouncementsNow } = useApp();
+  const { refreshPlatformSettings, syncAnnouncementsNow, platformSettings } = useApp();
 
-  const [sectionTab, setSectionTab] = useState<AdminSectionTab>("users");
+  const [sectionTab, setSectionTab] = useState<AdminSectionTab>(initialSectionTab || "users");
+
+  useEffect(() => {
+    if (initialSectionTab) {
+      setSectionTab(initialSectionTab);
+      onConsumeInitialSection?.();
+    }
+  }, [initialSectionTab, onConsumeInitialSection]);
 
   // Users directory state
   const [searchTerm, setSearchTerm] = useState("");
@@ -256,101 +329,126 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
   const [logSearch, setLogSearch] = useState("");
   const [confirmClearStream, setConfirmClearStream] = useState<"audit" | "activity" | "email" | "errors" | null>(null);
 
+  // Cloud & Published Environment Status state
+  const [cloudAdminActive, setCloudAdminActive] = useState<boolean>(() => isFirebaseAdminSessionActive());
+  const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
+  const [isConnectingCloudSync, setIsConnectingCloudSync] = useState<boolean>(false);
+
   // PDF Upload state & handlers
   const [uploadSubject, setUploadSubject] = useState<string>("Physics");
-  const [uploadGrade, setUploadGrade] = useState<StudentGrade>("12th Class");
+  const [uploadGrade, setUploadGrade] = useState<string>("12th Class");
+  const [uploadCategory, setUploadCategory] = useState<string>("Complete Study Guide");
+  const [uploadPageCount, setUploadPageCount] = useState<number>(15);
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadDescription, setUploadDescription] = useState("");
   const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadStatusText, setUploadStatusText] = useState<string>("");
   const [isUploadingPdf, setIsUploadingPdf] = useState<boolean>(false);
-  const [uploadedNotesHistory, setUploadedNotesHistory] = useState<any[]>([]);
+  const [uploadedNotesHistory, setUploadedNotesHistory] = useState<UploadedPdfNoteRecord[]>([]);
+  const [isLoadingUploadedNotes, setIsLoadingUploadedNotes] = useState<boolean>(false);
+  const [confirmDeletePdfId, setConfirmDeletePdfId] = useState<string | null>(null);
+  const [deletingPdfId, setDeletingPdfId] = useState<string | null>(null);
+  const pdfFileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const loadUploadedNotes = useCallback(async () => {
+    setIsLoadingUploadedNotes(true);
+    try {
+      const notes = await fetchAllPdfNotes();
+      setUploadedNotesHistory(notes);
+    } finally {
+      setIsLoadingUploadedNotes(false);
+    }
+  }, []);
 
   useEffect(() => {
-    fetch("/api/uploaded-notes")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && Array.isArray(data.notes)) {
-          setUploadedNotesHistory(data.notes);
-        }
-      })
-      .catch(() => {});
-  }, [isUploadingPdf]);
+    loadUploadedNotes();
+  }, [loadUploadedNotes]);
 
   const handleAdminPdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+        showToast("Please select a valid .pdf file.", "error");
+        e.target.value = "";
+        return;
+      }
       setSelectedPdfFile(file);
-      if (!uploadTitle) {
-        setUploadTitle(file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "));
+      if (!uploadTitle.trim()) {
+        setUploadTitle(file.name.replace(/\.pdf$/i, "").replace(/_/g, " "));
       }
     }
   };
 
   const handleAdminPdfUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPdfFile && !uploadTitle.trim()) {
-      showToast("Please select a PDF file or provide a title.", "error");
+    if (!selectedPdfFile) {
+      showToast("Please choose a PDF file from your device first.", "error");
       return;
     }
 
     setIsUploadingPdf(true);
-    setUploadProgress(0);
-
-    const interval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 90) {
-          clearInterval(interval);
-          return 90;
-        }
-        return prev + 15;
-      });
-    }, 200);
+    setUploadProgress(5);
+    setUploadStatusText("Starting PDF upload...");
 
     try {
-      const fileUrl = selectedPdfFile
-        ? URL.createObjectURL(selectedPdfFile)
-        : "/assets/aistudio/Class_12_Physics_Ch.11_Theory_Notes_aade1763.pdf";
-
-      const fileSizeKb = selectedPdfFile ? Math.round(selectedPdfFile.size / 1024) : 2048;
-
-      const res = await fetch("/api/uploaded-notes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: uploadTitle.trim() || selectedPdfFile?.name || "Curriculum Study Notes",
-          description: uploadDescription.trim() || `Uploaded notes for ${uploadSubject} (${uploadGrade})`,
-          subject: uploadSubject,
-          grade: uploadGrade,
-          fileSizeKb,
-          pageCount: 15,
-          fileUrl,
-          tags: [uploadSubject.toLowerCase(), uploadGrade.toLowerCase().replace(/\s+/g, ""), "admin_upload"],
-        }),
+      const result = await uploadPdfToCloud({
+        file: selectedPdfFile,
+        title: uploadTitle.trim() || selectedPdfFile.name.replace(/\.pdf$/i, ""),
+        description:
+          uploadDescription.trim() ||
+          `Original PDF notes for ${uploadSubject} (${uploadGrade}) uploaded verbatim without modifications.`,
+        subject: uploadSubject,
+        grade: uploadGrade,
+        category: uploadCategory,
+        pageCount: uploadPageCount,
+        onProgress: (pct, statusText) => {
+          setUploadProgress(pct);
+          setUploadStatusText(statusText);
+        },
       });
 
-      clearInterval(interval);
-      setUploadProgress(100);
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        showToast(`Successfully uploaded "${uploadTitle}" to Firestore storage & student notes!`);
-        setSelectedPdfFile(null);
-        setUploadTitle("");
-        setUploadDescription("");
-        if (data.note) {
-          setUploadedNotesHistory((prev) => [data.note, ...prev]);
-        }
-      } else {
-        throw new Error(data.error || "Upload failed");
+      showToast(`Uploaded "${result.note.title}" (${result.storageBackend}) — live in PDF Notes Mode!`);
+      setSelectedPdfFile(null);
+      setUploadTitle("");
+      setUploadDescription("");
+      if (pdfFileInputRef.current) {
+        pdfFileInputRef.current.value = "";
       }
+      await loadUploadedNotes();
     } catch (err: any) {
       showToast(err?.message || "Failed to upload PDF.", "error");
     } finally {
       setTimeout(() => {
         setIsUploadingPdf(false);
         setUploadProgress(0);
-      }, 800);
+        setUploadStatusText("");
+      }, 600);
+    }
+  };
+
+  const handleDownloadUploadedPdf = async (note: UploadedPdfNoteRecord) => {
+    try {
+      await downloadVerbatimPdf(note);
+      showToast(`Downloading "${note.fileName || note.title}"`);
+    } catch (err: any) {
+      showToast(err?.message || "Failed to download PDF.", "error");
+    }
+  };
+
+  const handleDeleteUploadedPdf = async (note: UploadedPdfNoteRecord) => {
+    setDeletingPdfId(note.id);
+    try {
+      const res = await deleteUploadedPdfNote(note);
+      if (res.success) {
+        showToast(`Deleted "${note.title}" from PDF library.`);
+        setConfirmDeletePdfId(null);
+        await loadUploadedNotes();
+      } else {
+        showToast(res.error || "Could not delete PDF note.", "error");
+      }
+    } finally {
+      setDeletingPdfId(null);
     }
   };
 
@@ -393,41 +491,110 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       (user) => {
         setGmailAuthEmail(user.email || null);
         setGmailConnected(Boolean(getGoogleAccessToken()));
+        setCloudAdminActive(isFirebaseAdminSessionActive());
       },
       () => {
         setGmailAuthEmail(null);
         setGmailConnected(false);
+        setCloudAdminActive(false);
       }
     );
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    safeJsonFetch<{ status?: string }>("/api/health").then((res) => {
+      setBackendReachable(res.ok);
+    });
+  }, [isAdmin]);
+
   const fetchServerOverview = useCallback(async () => {
     setIsLoadingOverview(true);
     try {
-      const res = await fetch("/api/admin/overview");
-      const data = await res.json();
-      if (res.ok && data.success && data.overview) {
-        setOverview(data.overview);
-        setSettingsForm(data.overview.settings);
+      const [apiRes, firestoreSettings] = await Promise.all([
+        safeJsonFetch<{ success: boolean; overview?: AdminServerOverview }>("/api/admin/overview"),
+        fetchPlatformSettingsFromFirestore(),
+      ]);
+
+      if (apiRes.ok && apiRes.data?.success && apiRes.data.overview) {
+        setBackendReachable(true);
+        setOverview(apiRes.data.overview);
+
+        const apiSettings = apiRes.data.overview.settings;
+        const chosenSettings =
+          firestoreSettings &&
+          (!apiSettings?.updatedAt ||
+            new Date(firestoreSettings.updatedAt || 0).getTime() >=
+              new Date(apiSettings.updatedAt || 0).getTime())
+            ? firestoreSettings
+            : apiSettings;
+        setSettingsForm(chosenSettings);
+      } else {
+        setBackendReachable(false);
+        const fallbackSettings: PlatformSettings = firestoreSettings || platformSettings || {
+          platformName: "PRO Study Mind v2.0",
+          supportEmail: "dandanish2332@gmail.com",
+          allowPublicSignup: true,
+          aiTutorEnabled: true,
+          adPlacementsEnabled: true,
+          defaultDailyGoalHours: 4,
+          maintenanceBanner: "",
+          updatedAt: new Date().toISOString(),
+        };
+        setSettingsForm(fallbackSettings);
+        setOverview({
+          server: {
+            uptimeSeconds: 0,
+            nodeVersion: "Serverless / Cloud Edge",
+            platform: "Netlify / Cloud",
+            pid: 0,
+            memory: { rssMb: 0, heapUsedMb: 0, heapTotalMb: 0 },
+          },
+          traffic: { totalApiRequests: 0, avgLatencyMs: 0, topRoutes: [], recentErrors: [] },
+          ai: {
+            geminiConfigured: true,
+            activeCooldowns: {},
+            caches: {
+              quiz: { size: 0, maxItems: 100, ttlMinutes: 30, hits: 0, misses: 0, hitRatePercent: 0 },
+              media: { size: 0, maxItems: 100, ttlMinutes: 30, hits: 0, misses: 0, hitRatePercent: 0 },
+              voice: { size: 0, maxItems: 100, ttlMinutes: 30, hits: 0, misses: 0, hitRatePercent: 0 },
+              chat: { size: 0, maxItems: 100, ttlMinutes: 30, hits: 0, misses: 0, hitRatePercent: 0 },
+            },
+          },
+          database: {
+            usersCount: 0,
+            announcementsCount: 0,
+            auditLogsCount: 0,
+            storageFiles: [],
+          },
+          settings: fallbackSettings,
+        });
+        showToast(apiRes.error || "Telemetry API unavailable — Firestore governance settings loaded.", "error");
       }
-    } catch {
-      showToast("Could not reach backend telemetry endpoint.", "error");
     } finally {
       setIsLoadingOverview(false);
     }
-  }, [showToast]);
+  }, [platformSettings, showToast]);
 
   const fetchAnnouncements = useCallback(async () => {
     setIsLoadingAnnouncements(true);
     try {
-      const res = await fetch("/api/announcements");
-      const data = await res.json();
-      if (res.ok && data.success && Array.isArray(data.announcements)) {
-        setAnnouncements(data.announcements);
+      const [apiRes, firestoreList] = await Promise.all([
+        safeJsonFetch<{ success: boolean; announcements?: ServerAnnouncement[] }>("/api/announcements"),
+        fetchAnnouncementsFromFirestore(),
+      ]);
+      const byId = new Map<string, ServerAnnouncement>();
+      if (apiRes.ok && apiRes.data?.success && Array.isArray(apiRes.data.announcements)) {
+        for (const a of apiRes.data.announcements) byId.set(a.id, a);
       }
-    } catch {
-      // ignore
+      for (const a of firestoreList) {
+        if (!byId.has(a.id)) byId.set(a.id, a);
+      }
+      const merged = Array.from(byId.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      setAnnouncements(merged);
     } finally {
       setIsLoadingAnnouncements(false);
     }
@@ -437,13 +604,10 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     setIsLoadingEmailLogs(true);
     try {
       const url = `/api/admin/email-logs?limit=150${q ? `&q=${encodeURIComponent(q)}` : ""}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (res.ok && data.success && Array.isArray(data.logs)) {
-        setEmailLogs(data.logs);
+      const res = await safeJsonFetch<{ success: boolean; logs?: EmailDispatchLog[] }>(url);
+      if (res.ok && res.data?.success && Array.isArray(res.data.logs)) {
+        setEmailLogs(res.data.logs);
       }
-    } catch {
-      // ignore
     } finally {
       setIsLoadingEmailLogs(false);
     }
@@ -455,26 +619,21 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       setGmailConnected(false);
       return;
     }
-    try {
-      const res = await fetch("/api/gmail/profile", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (res.status === 401) {
-        setGmailConnected(false);
-        setGmailError("Gmail session expired. Please click 'Sign in with Google' to reconnect.");
-        return;
-      }
-      if (res.ok && data.success && data.profile) {
-        setGmailProfile(data.profile);
-        setGmailAuthEmail(data.profile.emailAddress || null);
-        setGmailConnected(true);
-        setGmailError(null);
-      } else {
-        setGmailError(data.error || "Could not load Gmail profile.");
-      }
-    } catch {
-      setGmailError("Network error contacting Gmail API proxy.");
+    const res = await safeJsonFetch<{ success: boolean; profile?: any; error?: string }>("/api/gmail/profile", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      setGmailConnected(false);
+      setGmailError("Gmail session expired. Please click 'Sign in with Google' to reconnect.");
+      return;
+    }
+    if (res.ok && res.data?.success && res.data.profile) {
+      setGmailProfile(res.data.profile);
+      setGmailAuthEmail(res.data.profile.emailAddress || null);
+      setGmailConnected(true);
+      setGmailError(null);
+    } else {
+      setGmailError(res.error || res.data?.error || "Could not load Gmail profile.");
     }
   }, []);
 
@@ -488,37 +647,29 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     setGmailError(null);
     try {
       const q = queryOverride !== undefined ? queryOverride : gmailQuery;
-      const res = await fetch(
+      const res = await safeJsonFetch<{ success: boolean; messages?: GmailMessageSummary[]; error?: string }>(
         `/api/gmail/messages?maxResults=15${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ""}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      const data = await res.json();
       if (res.status === 401) {
         setGmailConnected(false);
         setGmailError("Gmail authorization expired. Reconnect with Google to view inbox.");
         return;
       }
-      if (res.ok && data.success && Array.isArray(data.messages)) {
-        setGmailMessages(data.messages);
+      if (res.ok && res.data?.success && Array.isArray(res.data.messages)) {
+        setGmailMessages(res.data.messages);
       } else {
-        setGmailError(data.error || "Failed to fetch Gmail messages.");
+        setGmailError(res.error || res.data?.error || "Failed to fetch Gmail messages.");
       }
-    } catch {
-      setGmailError("Network error loading Gmail inbox.");
     } finally {
       setIsLoadingGmail(false);
     }
   }, [gmailQuery]);
 
   const fetchLogsSummary = useCallback(async () => {
-    try {
-      const res = await fetch("/api/admin/logs/summary");
-      const data = await res.json();
-      if (res.ok && data.success && data.summary) {
-        setLogsSummary(data.summary);
-      }
-    } catch {
-      // ignore
+    const res = await safeJsonFetch<{ success: boolean; summary?: AdminLogsSummary }>("/api/admin/logs/summary");
+    if (res.ok && res.data?.success && res.data.summary) {
+      setLogsSummary(res.data.summary);
     }
   }, []);
 
@@ -526,34 +677,62 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     setIsLoadingLogs(true);
     try {
       if (logStream === "audit") {
-        const res = await fetch(`/api/admin/audit-logs?category=${encodeURIComponent(logCategoryFilter)}&limit=150`);
-        const data = await res.json();
-        if (res.ok && data.success && Array.isArray(data.logs)) setAuditLogs(data.logs);
+        const res = await safeJsonFetch<{ success: boolean; logs?: AdminAuditLog[] }>(
+          `/api/admin/audit-logs?category=${encodeURIComponent(logCategoryFilter)}&limit=150`
+        );
+        if (res.ok && res.data?.success && Array.isArray(res.data.logs)) setAuditLogs(res.data.logs);
       } else if (logStream === "auth") {
-        const res = await fetch(`/api/admin/logs/auth?limit=150${logSearch.trim() ? `&q=${encodeURIComponent(logSearch.trim())}` : ""}`);
-        const data = await res.json();
-        if (res.ok && data.success && Array.isArray(data.logs)) setAuthLogs(data.logs);
+        const res = await safeJsonFetch<{ success: boolean; logs?: AdminAuditLog[] }>(
+          `/api/admin/logs/auth?limit=150${logSearch.trim() ? `&q=${encodeURIComponent(logSearch.trim())}` : ""}`
+        );
+        if (res.ok && res.data?.success && Array.isArray(res.data.logs)) setAuthLogs(res.data.logs);
       } else if (logStream === "activity") {
-        const res = await fetch(
+        const res = await safeJsonFetch<{ success: boolean; logs?: UserActivityLog[] }>(
           `/api/admin/logs/activity?feature=${encodeURIComponent(activityFeatureFilter)}&limit=200${
             logSearch.trim() ? `&q=${encodeURIComponent(logSearch.trim())}` : ""
           }`
         );
-        const data = await res.json();
-        if (res.ok && data.success && Array.isArray(data.logs)) setActivityLogs(data.logs);
+        if (res.ok && res.data?.success && Array.isArray(res.data.logs)) setActivityLogs(res.data.logs);
       } else if (logStream === "email") {
         await fetchEmailLogs(logSearch.trim() || undefined);
       } else if (logStream === "errors") {
-        const res = await fetch("/api/admin/logs/errors");
-        const data = await res.json();
-        if (res.ok && data.success && Array.isArray(data.errors)) setApiErrorLogs(data.errors);
+        const res = await safeJsonFetch<{ success: boolean; errors?: { timestamp: string; route: string; statusCode: number; message: string }[] }>(
+          "/api/admin/logs/errors"
+        );
+        if (res.ok && res.data?.success && Array.isArray(res.data.errors)) setApiErrorLogs(res.data.errors);
       }
-    } catch {
-      // ignore
     } finally {
       setIsLoadingLogs(false);
     }
   }, [logStream, logCategoryFilter, activityFeatureFilter, logSearch, fetchEmailLogs]);
+
+  const handleActivateGoogleCloudSync = async () => {
+    setIsConnectingCloudSync(true);
+    try {
+      const res = await googleSignIn({ forceConsent: false });
+      if (res.email.toLowerCase() !== "dandanish2332@gmail.com") {
+        showToast(
+          `Signed in as ${res.email}. Note: Master Firestore Admin rules require dandanish2332@gmail.com.`,
+          "error"
+        );
+      } else {
+        await ensureAdminFirestoreDoc();
+        setCloudAdminActive(true);
+        setGmailConnected(true);
+        setGmailAuthEmail(res.email);
+        await Promise.all([
+          refreshPlatformSettings(),
+          fetchAnnouncements(),
+          loadUploadedNotes(),
+        ]);
+        showToast("Google Firestore Admin Sync activated for live cloud publishing!");
+      }
+    } catch (err: any) {
+      showToast(err?.message || "Could not connect Google Firestore Admin session.", "error");
+    } finally {
+      setIsConnectingCloudSync(false);
+    }
+  };
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -581,6 +760,8 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
         fetchActiveLogStream();
       }, 15000);
       return () => clearInterval(timer);
+    } else if (sectionTab === "pdf-upload") {
+      loadUploadedNotes();
     }
   }, [
     isAdmin,
@@ -593,6 +774,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     fetchAnnouncements,
     fetchLogsSummary,
     fetchActiveLogStream,
+    loadUploadedNotes,
   ]);
 
   const usersList = useMemo(() => {
@@ -1100,12 +1282,11 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
 
   const handleExportFullBackup = async () => {
     try {
-      const res = await fetch("/api/admin/backup");
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Backup export failed");
+      const res = await safeJsonFetch<{ success: boolean; snapshot?: any; error?: string }>("/api/admin/backup");
+      if (!res.ok || !res.data?.success || !res.data.snapshot) {
+        throw new Error(res.error || res.data?.error || "Backup export failed");
       }
-      const blob = new Blob([JSON.stringify(data.snapshot, null, 2)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify(res.data.snapshot, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -1126,21 +1307,20 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      const res = await fetch("/api/admin/restore", {
+      const res = await safeJsonFetch<{ success: boolean; usersCount?: number; error?: string }>("/api/admin/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ snapshot: parsed }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Invalid backup file");
+      if (!res.ok || !res.data?.success) {
+        throw new Error(res.error || res.data?.error || "Invalid backup file");
       }
       await refreshAdminUsersList(true);
       await refreshPlatformSettings();
       await syncAnnouncementsNow();
       fetchServerOverview();
       fetchAnnouncements();
-      showToast(`Restored server backup (${data.usersCount} user accounts).`);
+      showToast(`Restored server backup (${res.data.usersCount ?? 0} user accounts).`);
     } catch (err: any) {
       showToast(err?.message || "Failed to restore backup file.", "error");
     } finally {
@@ -1166,40 +1346,42 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       setBroadcastMessage("");
       fetchAnnouncements();
       syncAnnouncementsNow();
-      showToast("Broadcast published to backend and queued for student notifications.");
+      showToast("Broadcast published to backend & Firestore and queued for student notifications.");
     }
   };
 
   const handleDeleteAnnouncement = async (id: string) => {
-    try {
-      const res = await fetch(`/api/admin/announcements/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setAnnouncements(data.announcements);
-        showToast("Removed announcement from server.");
-      }
-    } catch {
-      showToast("Failed to remove announcement.", "error");
+    const [apiRes, firestoreDeleted] = await Promise.all([
+      safeJsonFetch<{ success: boolean; announcements?: ServerAnnouncement[]; error?: string }>(
+        `/api/admin/announcements/${encodeURIComponent(id)}`,
+        { method: "DELETE" }
+      ),
+      deleteAnnouncementFromFirestore(id),
+    ]);
+
+    if ((apiRes.ok && apiRes.data?.success) || firestoreDeleted) {
+      setAnnouncements((prev) => prev.filter((a) => a.id !== id));
+      await syncAnnouncementsNow();
+      showToast("Removed announcement from server & cloud.");
+    } else {
+      showToast(apiRes.error || "Failed to remove announcement.", "error");
     }
   };
 
   const handleClearCache = async (target: "quiz" | "media" | "voice" | "chat" | "cooldowns" | "all") => {
     setIsClearingCache(target);
     try {
-      const res = await fetch("/api/admin/cache/clear", {
+      const res = await safeJsonFetch<{ success: boolean; error?: string }>("/api/admin/cache/clear", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target }),
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
+      if (res.ok && res.data?.success) {
         await fetchServerOverview();
         showToast(`Cleared backend ${target === "all" ? "caches & model cooldowns" : `${target} cache`}.`);
+      } else {
+        showToast(res.error || res.data?.error || "Failed to clear server cache.", "error");
       }
-    } catch {
-      showToast("Failed to clear server cache.", "error");
     } finally {
       setIsClearingCache(null);
     }
@@ -1210,22 +1392,37 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     if (!settingsForm) return;
     setIsSavingSettings(true);
     try {
-      const res = await fetch("/api/admin/platform-settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settingsForm),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSettingsForm(data.settings);
+      const payload: PlatformSettings = {
+        ...settingsForm,
+        updatedAt: new Date().toISOString(),
+      };
+      const [apiRes, firestoreSaved] = await Promise.all([
+        safeJsonFetch<{ success: boolean; settings?: PlatformSettings; error?: string }>(
+          "/api/admin/platform-settings",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          }
+        ),
+        syncPlatformSettingsToFirestore(payload),
+      ]);
+
+      if ((apiRes.ok && apiRes.data?.success) || firestoreSaved) {
+        const finalSettings = apiRes.data?.settings || payload;
+        setSettingsForm(finalSettings);
         await refreshPlatformSettings();
-        await fetchServerOverview();
-        showToast("Saved backend platform settings.");
+        if (apiRes.ok) {
+          await fetchServerOverview();
+        }
+        showToast(
+          firestoreSaved
+            ? "Saved platform governance settings to Backend & Firestore globally!"
+            : "Saved platform settings on backend server."
+        );
       } else {
-        showToast(data.error || "Failed to save settings.", "error");
+        showToast(apiRes.error || apiRes.data?.error || "Failed to save settings.", "error");
       }
-    } catch {
-      showToast("Network error saving platform settings.", "error");
     } finally {
       setIsSavingSettings(false);
     }
@@ -1240,18 +1437,20 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
         email: "/api/admin/email-logs",
         errors: "/api/admin/logs/errors",
       };
-      const res = await fetch(endpointMap[confirmClearStream], { method: "DELETE" });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        if (confirmClearStream === "audit") setAuditLogs(data.logs || []);
+      const res = await safeJsonFetch<{ success: boolean; logs?: AdminAuditLog[]; error?: string }>(
+        endpointMap[confirmClearStream],
+        { method: "DELETE" }
+      );
+      if (res.ok && res.data?.success) {
+        if (confirmClearStream === "audit") setAuditLogs(res.data.logs || []);
         if (confirmClearStream === "activity") setActivityLogs([]);
         if (confirmClearStream === "email") setEmailLogs([]);
         if (confirmClearStream === "errors") setApiErrorLogs([]);
         fetchLogsSummary();
         showToast(`Cleared ${confirmClearStream} logs.`);
+      } else {
+        showToast(res.error || "Failed to clear logs.", "error");
       }
-    } catch {
-      showToast("Failed to clear logs.", "error");
     } finally {
       setConfirmClearStream(null);
     }
@@ -1311,22 +1510,20 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     }
     setIsLoadingGmailDetail(true);
     try {
-      const res = await fetch(`/api/gmail/messages/${encodeURIComponent(msgId)}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
+      const res = await safeJsonFetch<{ success: boolean; message?: GmailMessageDetail; error?: string }>(
+        `/api/gmail/messages/${encodeURIComponent(msgId)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       if (res.status === 401) {
         setGmailConnected(false);
         setGmailError("Gmail token expired. Reconnect with Google.");
         return;
       }
-      if (res.ok && data.success && data.message) {
-        setSelectedGmailMsg(data.message);
+      if (res.ok && res.data?.success && res.data.message) {
+        setSelectedGmailMsg(res.data.message);
       } else {
-        showToast(data.error || "Could not load message details.", "error");
+        showToast(res.error || res.data?.error || "Could not load message details.", "error");
       }
-    } catch {
-      showToast("Network error reading email.", "error");
     } finally {
       setIsLoadingGmailDetail(false);
     }
@@ -1356,7 +1553,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
     }
     setIsSendingEmail(true);
     try {
-      const res = await fetch("/api/gmail/send", {
+      const res = await safeJsonFetch<{ success: boolean; error?: string }>("/api/gmail/send", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1369,15 +1566,14 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
           senderEmail: gmailProfile?.emailAddress || gmailAuthEmail || "admin0011",
         }),
       });
-      const data = await res.json();
       setConfirmSendEmailOpen(false);
       if (res.status === 401) {
         setGmailConnected(false);
         showToast("Gmail authorization expired. Reconnect Google and retry.", "error");
         return;
       }
-      if (!res.ok || !data.success) {
-        showToast(data.error || "Failed to send email via Gmail.", "error");
+      if (!res.ok || !res.data?.success) {
+        showToast(res.error || res.data?.error || "Failed to send email via Gmail.", "error");
         fetchEmailLogs();
         return;
       }
@@ -1387,9 +1583,6 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       fetchEmailLogs();
       fetchGmailMessages(undefined, token);
       fetchLogsSummary();
-    } catch {
-      setConfirmSendEmailOpen(false);
-      showToast("Network error sending email.", "error");
     } finally {
       setIsSendingEmail(false);
     }
@@ -1502,13 +1695,81 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                 await fetchLogsSummary();
                 await fetchActiveLogStream();
               }
-              showToast("Synchronized with Express backend.");
+              if (sectionTab === "pdf-upload") {
+                await loadUploadedNotes();
+              }
+              showToast("Synchronized with Express backend & Firestore.");
             }}
             className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors shrink-0 cursor-pointer"
             title="Sync with server"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
+        </div>
+      </div>
+
+      {/* Cloud Sync & Published Status Bar */}
+      <div className="px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <Server className={`w-3.5 h-3.5 ${backendReachable === false ? "text-amber-500" : "text-emerald-500"}`} />
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Backend API:</span>
+            <span
+              className={`font-bold ${
+                backendReachable === false
+                  ? "text-amber-600 dark:text-amber-400"
+                  : backendReachable === true
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-slate-400"
+              }`}
+            >
+              {backendReachable === true
+                ? "Connected"
+                : backendReachable === false
+                ? "Degraded (Firestore Fallback Active)"
+                : "Checking..."}
+            </span>
+          </div>
+
+          <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+          <div className="flex items-center gap-1.5">
+            <Cloud className={`w-3.5 h-3.5 ${cloudAdminActive ? "text-emerald-500" : "text-amber-500"}`} />
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Cloud Sync:</span>
+            <span
+              className={`font-bold ${
+                cloudAdminActive ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"
+              }`}
+            >
+              {cloudAdminActive
+                ? "Firestore Admin Verified (dandanish2332@gmail.com)"
+                : "Local Admin Session Only — Connect Google for large PDFs & global rules"}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {!cloudAdminActive && (
+            <button
+              type="button"
+              onClick={handleActivateGoogleCloudSync}
+              disabled={isConnectingCloudSync}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-bold transition-colors cursor-pointer"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span>{isConnectingCloudSync ? "Connecting..." : "Activate Google Firestore Sync"}</span>
+            </button>
+          )}
+          {setActiveTab && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("pdfnotes")}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold transition-colors cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5 text-cyan-500" />
+              <span>Open Student PDF Notes</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -2716,6 +2977,21 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                     <div className="space-y-3">
                       <div>
                         <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Platform Name
+                        </label>
+                        <input
+                          type="text"
+                          value={settingsForm.platformName || "PRO Study Mind v2.0"}
+                          onChange={(e) =>
+                            setSettingsForm({ ...settingsForm, platformName: e.target.value })
+                          }
+                          placeholder="PRO Study Mind v2.0"
+                          className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                           Global Notice / Maintenance Banner
                         </label>
                         <input
@@ -3390,59 +3666,92 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
       {sectionTab === "pdf-upload" && (
         <div className="space-y-6 animate-fadeIn">
           <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-indigo-950 via-slate-900 to-indigo-900 border border-indigo-800/60 text-white shadow-xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-3 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 text-cyan-300">
-                <Upload className="w-6 h-6 animate-pulse" />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 text-cyan-300 shrink-0">
+                  <Upload className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-extrabold">PDF Upload & Firestore Storage Console</h2>
+                  <p className="text-xs sm:text-sm text-slate-300">
+                    Upload any local PDF note verbatim without edits. It is automatically published into the dedicated Student PDF Notes Mode under the selected Class & Subject.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-lg sm:text-xl font-extrabold">PDF Upload & Firestore Storage Console</h2>
-                <p className="text-xs sm:text-sm text-slate-300">
-                  Select a subject, target class, and upload any local PDF study note or textbook chapter. Files are automatically synchronized with Firestore storage and published instantly to all students.
-                </p>
-              </div>
+              {setActiveTab && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("pdfnotes")}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-400/40 text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>View in PDF Notes Mode</span>
+                </button>
+              )}
             </div>
 
             <form onSubmit={handleAdminPdfUploadSubmit} className="space-y-4 pt-2">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-300">Select Subject</label>
+                  <label className="text-xs font-bold text-slate-300">Select Subject *</label>
                   <select
                     value={uploadSubject}
                     onChange={(e) => setUploadSubject(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-xs font-semibold text-white focus:outline-none focus:border-indigo-400"
                   >
-                    <option value="Physics">Physics</option>
-                    <option value="Chemistry">Chemistry</option>
-                    <option value="Biology">Biology</option>
-                    <option value="Mathematics">Mathematics</option>
-                    <option value="Computer Science">Computer Science</option>
-                    <option value="English">English</option>
-                    <option value="General Study">General Study</option>
+                    {PDF_SUBJECT_OPTIONS.map((sub) => (
+                      <option key={sub} value={sub}>{sub}</option>
+                    ))}
                   </select>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-300">Target Class / Grade</label>
+                  <label className="text-xs font-bold text-slate-300">Target Class / Grade *</label>
                   <select
                     value={uploadGrade}
-                    onChange={(e) => setUploadGrade(e.target.value as StudentGrade)}
+                    onChange={(e) => setUploadGrade(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-xs font-semibold text-white focus:outline-none focus:border-indigo-400"
                   >
-                    {GRADE_OPTIONS.map((g) => (
+                    {PDF_GRADE_OPTIONS.map((g) => (
                       <option key={g} value={g}>{g}</option>
                     ))}
                   </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-300">Category</label>
+                  <select
+                    value={uploadCategory}
+                    onChange={(e) => setUploadCategory(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-xs font-semibold text-white focus:outline-none focus:border-indigo-400"
+                  >
+                    {PDF_CATEGORY_OPTIONS.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-300">Page Count (Approx.)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={2000}
+                    value={uploadPageCount}
+                    onChange={(e) => setUploadPageCount(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-xs font-mono tabular-nums text-white focus:outline-none focus:border-indigo-400"
+                  />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-300">Note / Document Title</label>
+                  <label className="text-xs font-bold text-slate-300">Note / Document Title *</label>
                   <input
                     type="text"
                     value={uploadTitle}
                     onChange={(e) => setUploadTitle(e.target.value)}
-                    placeholder="e.g., Chapter 11 Electrostatics Master Guide"
+                    placeholder="e.g., Chapter 12 Current Electricity Full PDF Notes"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400"
                     required
                   />
@@ -3461,18 +3770,19 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-300">Choose PDF File from Local Device</label>
+                <label className="text-xs font-bold text-slate-300">Choose PDF File from Local Device *</label>
                 <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-950/60 border-2 border-dashed border-indigo-500/40 hover:border-indigo-400 transition-colors">
                   <input
+                    ref={pdfFileInputRef}
                     type="file"
-                    accept=".pdf"
+                    accept="application/pdf,.pdf"
                     onChange={handleAdminPdfFileSelect}
                     className="w-full text-xs text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
                   />
                 </div>
                 {selectedPdfFile && (
                   <p className="text-[11px] text-cyan-300 font-mono">
-                    Selected: {selectedPdfFile.name} ({Math.round(selectedPdfFile.size / 1024)} KB)
+                    Selected: {selectedPdfFile.name} ({Math.max(1, Math.round(selectedPdfFile.size / 1024))} KB) — Verbatim PDF binary preserved
                   </p>
                 )}
               </div>
@@ -3483,7 +3793,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
                   <div className="flex justify-between text-xs font-bold">
                     <span className="text-indigo-200 flex items-center gap-2">
                       <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-300" />
-                      Uploading to Firestore & Cloud Storage...
+                      {uploadStatusText || "Uploading to Firestore & Cloud Storage..."}
                     </span>
                     <span className="text-cyan-300 font-mono">{uploadProgress}%</span>
                   </div>
@@ -3499,11 +3809,11 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
               <div className="flex justify-end pt-2">
                 <button
                   type="submit"
-                  disabled={isUploadingPdf}
+                  disabled={isUploadingPdf || !selectedPdfFile}
                   className="flex items-center gap-2 px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
                 >
                   <Upload className="w-4 h-4" />
-                  {isUploadingPdf ? "Uploading..." : "Upload & Publish to Firestore"}
+                  {isUploadingPdf ? "Uploading..." : "Upload & Publish to PDF Notes Mode"}
                 </button>
               </div>
             </form>
@@ -3511,38 +3821,102 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({ setActiveTab }) => {
 
           {/* Uploaded History List */}
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <FileText className="w-4 h-4 text-indigo-500" />
-              Recently Uploaded Notes ({uploadedNotesHistory.length})
-            </h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <FileText className="w-4 h-4 text-indigo-500" />
+                Published Original PDF Library ({uploadedNotesHistory.length})
+              </h3>
+              <button
+                type="button"
+                onClick={loadUploadedNotes}
+                disabled={isLoadingUploadedNotes}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingUploadedNotes ? "animate-spin" : ""}`} />
+                <span>Refresh</span>
+              </button>
+            </div>
+
             <div className="space-y-2.5">
               {uploadedNotesHistory.length === 0 ? (
-                <p className="text-xs text-slate-500 py-4 text-center">No PDF notes uploaded yet this session.</p>
+                <p className="text-xs text-slate-500 py-4 text-center">No PDF notes uploaded yet.</p>
               ) : (
-                uploadedNotesHistory.map((note) => (
-                  <div
-                    key={note.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
-                          {note.subject} • {note.grade}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400">{note.lastUpdated}</span>
-                      </div>
-                      <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">{note.title}</h4>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400">{note.description}</p>
-                    </div>
-                    <a
-                      href={note.fileUrl}
-                      download
-                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shrink-0 transition-colors"
+                uploadedNotesHistory.map((note) => {
+                  const storageBadge =
+                    note.storageType === "firebase_storage"
+                      ? "Firebase Storage"
+                      : note.storageType === "firestore_chunks"
+                      ? "Firestore Chunks"
+                      : note.storageType === "static_asset"
+                      ? "Official Built-In PDF"
+                      : "Backend Server";
+                  const isConfirming = confirmDeletePdfId === note.id;
+
+                  return (
+                    <div
+                      key={note.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800"
                     >
-                      <Download className="w-3.5 h-3.5" /> Download PDF
-                    </a>
-                  </div>
-                ))
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
+                            {note.subject} • {note.grade}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                            {storageBadge}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {note.pageCount}p · {note.fileSizeKb >= 1024 ? `${(note.fileSizeKb / 1024).toFixed(1)} MB` : `${note.fileSizeKb} KB`} · {note.lastUpdated}
+                          </span>
+                        </div>
+                        <h4 className="text-xs font-extrabold text-slate-900 dark:text-white truncate">{note.title}</h4>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{note.description}</p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadUploadedPdf(note)}
+                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download PDF</span>
+                        </button>
+
+                        {note.storageType !== "static_asset" && (
+                          isConfirming ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={deletingPdfId === note.id}
+                                onClick={() => handleDeleteUploadedPdf(note)}
+                                className="px-2.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+                              >
+                                {deletingPdfId === note.id ? "Deleting..." : "Confirm"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeletePdfId(null)}
+                                className="px-2 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeletePdfId(note.id)}
+                              className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-600 text-rose-600 dark:text-rose-400 hover:text-white border border-rose-200 dark:border-rose-900 transition-colors cursor-pointer"
+                              title="Delete PDF from library"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>

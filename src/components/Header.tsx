@@ -37,6 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
     setTheme,
     notifications,
     setIsVoiceModalOpen,
+    platformSettings,
     tr,
   } = useApp();
 
@@ -88,9 +89,9 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={onOpenWelcomeIntro}
             className="flex items-center text-left group hover:opacity-90 active:scale-[0.99] transition-all cursor-pointer focus:outline-none"
-            title="Click to view PRO Study Mind v2.0 Welcome Splash Screen"
+            title={`Click to view ${platformSettings?.platformName || "PRO Study Mind v2.0"} Welcome Splash Screen`}
           >
-            <ProStudyMindLogo size="md" showText={true} showBadge={true} />
+            <ProStudyMindLogo size="md" showText={true} showBadge={true} customTitle={platformSettings?.platformName} />
           </button>
         </div>
 

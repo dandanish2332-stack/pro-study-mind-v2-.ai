@@ -34,6 +34,11 @@ import {
 import { t } from "../utils/i18n";
 import { useAuth } from "./AuthContext";
 import { getUserItem, setUserItem, logUserActivityToServer } from "../utils/userStorage";
+import { safeJsonFetch } from "../utils/safeFetch";
+import {
+  fetchPlatformSettingsFromFirestore,
+  fetchAnnouncementsFromFirestore,
+} from "../services/cloudSyncService";
 
 interface AppContextType {
   language: Language;
@@ -288,13 +293,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const userId = currentUser?.id;
     if (!userId) return;
     try {
-      const res = await fetch("/api/announcements");
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data?.success || !Array.isArray(data.announcements)) return;
+      const [apiRes, firestoreAnns] = await Promise.all([
+        safeJsonFetch<{ success: boolean; announcements?: ServerAnnouncement[] }>("/api/announcements"),
+        fetchAnnouncementsFromFirestore(),
+      ]);
+
+      const mergedMap = new Map<string, ServerAnnouncement>();
+      if (apiRes.ok && apiRes.data?.success && Array.isArray(apiRes.data.announcements)) {
+        for (const a of apiRes.data.announcements) mergedMap.set(a.id, a);
+      }
+      for (const a of firestoreAnns) {
+        mergedMap.set(a.id, a);
+      }
+
+      const allAnnouncements = Array.from(mergedMap.values());
+      if (allAnnouncements.length === 0) return;
 
       const seenIds = getUserItem<string[]>(userId, "seen_announcement_ids", []);
-      const unseen = (data.announcements as ServerAnnouncement[]).filter(
+      const unseen = allAnnouncements.filter(
         (ann) =>
           !seenIds.includes(ann.id) &&
           (ann.targetGrade === "All Levels" ||
@@ -359,12 +375,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const refreshPlatformSettings = useCallback(async () => {
     try {
-      const res = await fetch("/api/platform-settings");
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.success && data.settings) {
-          setPlatformSettings(data.settings);
-        }
+      const [apiRes, firestoreSettings] = await Promise.all([
+        safeJsonFetch<{ success: boolean; settings?: PlatformSettings }>("/api/platform-settings"),
+        fetchPlatformSettingsFromFirestore(),
+      ]);
+      const apiSettings = apiRes.ok && apiRes.data?.success ? apiRes.data.settings || null : null;
+      if (apiSettings && firestoreSettings) {
+        const apiTime = new Date(apiSettings.updatedAt || 0).getTime();
+        const fsTime = new Date(firestoreSettings.updatedAt || 0).getTime();
+        setPlatformSettings(fsTime > apiTime ? firestoreSettings : apiSettings);
+      } else if (firestoreSettings || apiSettings) {
+        setPlatformSettings(firestoreSettings || apiSettings);
       }
     } catch {
       // ignore offline
@@ -921,6 +942,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setUserItem(currentUser?.id, "chat_history", next);
       return next;
     });
+
+    if (platformSettings?.aiTutorEnabled === false) {
+      const pausedMsg: ChatMessage = {
+        id: "m-" + (Date.now() + 1),
+        sender: "ai",
+        text: `AI Tutor endpoints are currently paused by the Master Administrator. For assistance, please contact ${platformSettings.supportEmail || "dandanish2332@gmail.com"}.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setChatMessages((prev) => {
+        const next = [...prev, pausedMsg];
+        setUserItem(currentUser?.id, "chat_history", next);
+        return next;
+      });
+      return;
+    }
 
     try {
       const res = await fetch("/api/ai/chat", {

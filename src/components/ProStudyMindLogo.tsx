@@ -6,6 +6,7 @@ interface ProStudyMindLogoProps {
   showText?: boolean;
   showBadge?: boolean;
   useImage?: boolean;
+  customTitle?: string;
   className?: string;
 }
 
@@ -14,6 +15,7 @@ export const ProStudyMindLogo: React.FC<ProStudyMindLogoProps> = ({
   showText = true,
   showBadge = true,
   useImage = false,
+  customTitle,
   className = "",
 }) => {
   const [imgError, setImgError] = React.useState(false);
@@ -128,13 +130,21 @@ export const ProStudyMindLogo: React.FC<ProStudyMindLogoProps> = ({
       {showText && (
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className={`font-black tracking-tight text-slate-900 dark:text-white ${text} leading-none`}>
-              PRO STUDY <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400">MIND</span>
-            </span>
-            {showBadge && (
-              <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-black tracking-wider uppercase bg-gradient-to-r from-indigo-600 to-cyan-600 text-white shadow-xs ${badge}`}>
-                v2.0
+            {customTitle && customTitle.trim() && customTitle.trim().toLowerCase() !== "pro study mind v2.0" ? (
+              <span className={`font-black tracking-tight text-slate-900 dark:text-white ${text} leading-none`}>
+                {customTitle}
               </span>
+            ) : (
+              <>
+                <span className={`font-black tracking-tight text-slate-900 dark:text-white ${text} leading-none`}>
+                  PRO STUDY <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400">MIND</span>
+                </span>
+                {showBadge && (
+                  <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-black tracking-wider uppercase bg-gradient-to-r from-indigo-600 to-cyan-600 text-white shadow-xs ${badge}`}>
+                    v2.0
+                  </span>
+                )}
+              </>
             )}
           </div>
           <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tracking-wide mt-0.5">
