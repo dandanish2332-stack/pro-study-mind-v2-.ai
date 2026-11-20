@@ -333,6 +333,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
   const [cloudAdminActive, setCloudAdminActive] = useState<boolean>(() => isFirebaseAdminSessionActive());
   const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
   const [isConnectingCloudSync, setIsConnectingCloudSync] = useState<boolean>(false);
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
 
   // PDF Upload state & handlers
   const [uploadSubject, setUploadSubject] = useState<string>("Physics");
@@ -545,7 +546,9 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
         setSettingsForm(fallbackSettings);
         setOverview({
           server: {
+            status: "degraded",
             uptimeSeconds: 0,
+            startedAt: new Date().toISOString(),
             nodeVersion: "Serverless / Cloud Edge",
             platform: "Netlify / Cloud",
             pid: 0,
@@ -563,7 +566,15 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
             },
           },
           database: {
-            usersCount: 0,
+            totalUsers: 0,
+            onlineUsers: 0,
+            offlineUsers: 0,
+            totalTasks: 0,
+            completedTasks: 0,
+            totalFiles: 0,
+            totalCalendarEvents: 0,
+            totalQuizzes: 0,
+            totalXp: 0,
             announcementsCount: 0,
             auditLogsCount: 0,
             storageFiles: [],
@@ -708,27 +719,46 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
 
   const handleActivateGoogleCloudSync = async () => {
     setIsConnectingCloudSync(true);
+    setCloudSyncError(null);
     try {
-      const res = await googleSignIn({ forceConsent: false });
-      if (res.email.toLowerCase() !== "dandanish2332@gmail.com") {
-        showToast(
-          `Signed in as ${res.email}. Note: Master Firestore Admin rules require dandanish2332@gmail.com.`,
-          "error"
-        );
-      } else {
-        await ensureAdminFirestoreDoc();
+      // Reuse active verified Master Admin Firebase Auth session if already signed in
+      if (isFirebaseAdminSessionActive()) {
+        await ensureAdminFirestoreDoc(true);
         setCloudAdminActive(true);
-        setGmailConnected(true);
-        setGmailAuthEmail(res.email);
         await Promise.all([
           refreshPlatformSettings(),
           fetchAnnouncements(),
           loadUploadedNotes(),
         ]);
-        showToast("Google Firestore Admin Sync activated for live cloud publishing!");
+        showToast("Google Firestore Admin Sync verified & active!");
+        return;
       }
+
+      const res = await googleSignIn({
+        forceConsent: false,
+        includeGmailScopes: false,
+      });
+
+      if (res.email.toLowerCase() !== "dandanish2332@gmail.com") {
+        const msg = `Signed in as ${res.email}. Master Firestore Admin rules require dandanish2332@gmail.com.`;
+        setCloudSyncError(msg);
+        showToast(msg, "error");
+        return;
+      }
+
+      await ensureAdminFirestoreDoc(true);
+      setCloudAdminActive(true);
+      setGmailAuthEmail(res.email);
+      await Promise.all([
+        refreshPlatformSettings(),
+        fetchAnnouncements(),
+        loadUploadedNotes(),
+      ]);
+      showToast("Google Firestore Admin Sync activated for live global publishing!");
     } catch (err: any) {
-      showToast(err?.message || "Could not connect Google Firestore Admin session.", "error");
+      const msg = err?.message || "Could not connect Google Firestore Admin session.";
+      setCloudSyncError(msg);
+      showToast(msg, "error");
     } finally {
       setIsConnectingCloudSync(false);
     }
@@ -1470,7 +1500,10 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     setIsConnectingGmail(true);
     setGmailError(null);
     try {
-      const res = await googleSignIn({ forceConsent });
+      const res = await googleSignIn({ forceConsent, includeGmailScopes: true });
+      if (!res.accessToken) {
+        throw new Error("Google did not return a Gmail access token. Please allow Gmail permissions and retry.");
+      }
       setGmailConnected(true);
       setGmailAuthEmail(res.email);
       await Promise.all([
@@ -1709,68 +1742,94 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
       </div>
 
       {/* Cloud Sync & Published Status Bar */}
-      <div className="px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5">
-            <Server className={`w-3.5 h-3.5 ${backendReachable === false ? "text-amber-500" : "text-emerald-500"}`} />
-            <span className="font-semibold text-slate-700 dark:text-slate-300">Backend API:</span>
-            <span
-              className={`font-bold ${
-                backendReachable === false
-                  ? "text-amber-600 dark:text-amber-400"
-                  : backendReachable === true
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-slate-400"
-              }`}
-            >
-              {backendReachable === true
-                ? "Connected"
-                : backendReachable === false
-                ? "Degraded (Firestore Fallback Active)"
-                : "Checking..."}
-            </span>
+      <div className="space-y-2">
+        <div className="px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <Server className={`w-3.5 h-3.5 ${backendReachable === false ? "text-amber-500" : "text-emerald-500"}`} />
+              <span className="font-semibold text-slate-700 dark:text-slate-300">Backend API:</span>
+              <span
+                className={`font-bold ${
+                  backendReachable === false
+                    ? "text-amber-600 dark:text-amber-400"
+                    : backendReachable === true
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-slate-400"
+                }`}
+              >
+                {backendReachable === true
+                  ? "Connected"
+                  : backendReachable === false
+                  ? "Degraded (Firestore Fallback Active)"
+                  : "Checking..."}
+              </span>
+            </div>
+
+            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+            <div className="flex items-center gap-1.5">
+              <Cloud className={`w-3.5 h-3.5 ${cloudAdminActive ? "text-emerald-500" : "text-amber-500"}`} />
+              <span className="font-semibold text-slate-700 dark:text-slate-300">Cloud Sync:</span>
+              <span
+                className={`font-bold ${
+                  cloudAdminActive ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"
+                }`}
+              >
+                {cloudAdminActive
+                  ? "Firestore Admin Verified (dandanish2332@gmail.com)"
+                  : "Connect Google Firestore Sync for multi-device global PDFs & cloud rules"}
+              </span>
+            </div>
           </div>
 
-          <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
-
-          <div className="flex items-center gap-1.5">
-            <Cloud className={`w-3.5 h-3.5 ${cloudAdminActive ? "text-emerald-500" : "text-amber-500"}`} />
-            <span className="font-semibold text-slate-700 dark:text-slate-300">Cloud Sync:</span>
-            <span
-              className={`font-bold ${
-                cloudAdminActive ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"
-              }`}
-            >
-              {cloudAdminActive
-                ? "Firestore Admin Verified (dandanish2332@gmail.com)"
-                : "Local Admin Session Only — Connect Google for large PDFs & global rules"}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {!cloudAdminActive && (
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={handleActivateGoogleCloudSync}
               disabled={isConnectingCloudSync}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-bold transition-colors cursor-pointer"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold transition-colors cursor-pointer ${
+                cloudAdminActive
+                  ? "bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                  : "bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white"
+              }`}
             >
               <Cloud className="w-3.5 h-3.5" />
-              <span>{isConnectingCloudSync ? "Connecting..." : "Activate Google Firestore Sync"}</span>
+              <span>
+                {isConnectingCloudSync
+                  ? "Connecting..."
+                  : cloudAdminActive
+                  ? "Verify Firestore Sync"
+                  : "Activate Google Firestore Sync"}
+              </span>
             </button>
-          )}
-          {setActiveTab && (
+            {setActiveTab && (
+              <button
+                type="button"
+                onClick={() => setActiveTab("pdfnotes")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-cyan-500" />
+                <span>Open Student PDF Notes</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {cloudSyncError && (
+          <div className="px-4 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 text-xs font-semibold flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+              <span>{cloudSyncError}</span>
+            </div>
             <button
               type="button"
-              onClick={() => setActiveTab("pdfnotes")}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold transition-colors cursor-pointer"
+              onClick={() => setCloudSyncError(null)}
+              className="p-1 text-rose-500 hover:text-rose-700 dark:hover:text-white cursor-pointer"
             >
-              <FileText className="w-3.5 h-3.5 text-cyan-500" />
-              <span>Open Student PDF Notes</span>
+              <X className="w-3.5 h-3.5" />
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Console Sub-Navigation Segmented Bar */}
@@ -3736,7 +3795,7 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
                   <input
                     type="number"
                     min={1}
-                    max={2000}
+                    max={5000}
                     value={uploadPageCount}
                     onChange={(e) => setUploadPageCount(Math.max(1, Number(e.target.value) || 1))}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-xs font-mono tabular-nums text-white focus:outline-none focus:border-indigo-400"
@@ -3883,35 +3942,33 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
                           <span>Download PDF</span>
                         </button>
 
-                        {note.storageType !== "static_asset" && (
-                          isConfirming ? (
-                            <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                disabled={deletingPdfId === note.id}
-                                onClick={() => handleDeleteUploadedPdf(note)}
-                                className="px-2.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
-                              >
-                                {deletingPdfId === note.id ? "Deleting..." : "Confirm"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeletePdfId(null)}
-                                className="px-2 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
+                        {isConfirming ? (
+                          <div className="flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => setConfirmDeletePdfId(note.id)}
-                              className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-600 text-rose-600 dark:text-rose-400 hover:text-white border border-rose-200 dark:border-rose-900 transition-colors cursor-pointer"
-                              title="Delete PDF from library"
+                              disabled={deletingPdfId === note.id}
+                              onClick={() => handleDeleteUploadedPdf(note)}
+                              className="px-2.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              {deletingPdfId === note.id ? "Deleting..." : "Confirm"}
                             </button>
-                          )
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeletePdfId(null)}
+                              className="px-2 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeletePdfId(note.id)}
+                            className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-600 text-rose-600 dark:text-rose-400 hover:text-white border border-rose-200 dark:border-rose-900 transition-colors cursor-pointer"
+                            title="Delete PDF from library"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         )}
                       </div>
                     </div>

@@ -10,7 +10,7 @@ const PORT = process.env.NODE_ENV === "production" && process.env.PORT ? Number(
 
 // High-speed HTTP response compression (gzip/deflate) to minimize payload transfer latency
 app.use(compression());
-app.use(express.json({ limit: "30mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 // Normalize Netlify Function & proxy paths so /api/* routes always match cleanly
 app.use((req, _res, next) => {
@@ -5020,8 +5020,12 @@ const memStore: {
   deletedUserIds?: string[];
   uploadedNotes?: any[];
   pdfDataUrls: Map<string, string>;
+  pdfBuffers: Map<string, Buffer>;
+  pdfUploadSessions: Map<string, { chunks: Buffer[]; createdAt: number }>;
 } = {
   pdfDataUrls: new Map(),
+  pdfBuffers: new Map(),
+  pdfUploadSessions: new Map(),
 };
 
 interface ServerStoredUser {
@@ -7311,6 +7315,44 @@ function saveUploadedNotes(notes: any[]): void {
   writeWritableJson(UPLOADED_NOTES_FILE, cleaned);
 }
 
+function sanitizeNoteFileId(id: string): string {
+  return String(id || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function getUploadedPdfBuffer(id: string): Buffer | null {
+  const safeId = sanitizeNoteFileId(id);
+  const memBuf = memStore.pdfBuffers.get(id);
+  if (memBuf) return memBuf;
+
+  const pdfDiskPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.pdf`);
+  if (fs.existsSync(pdfDiskPath)) {
+    try {
+      const buf = fs.readFileSync(pdfDiskPath);
+      memStore.pdfBuffers.set(id, buf);
+      return buf;
+    } catch {}
+  }
+
+  let dataUrl = memStore.pdfDataUrls.get(id);
+  if (!dataUrl) {
+    const b64DiskPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.b64`);
+    if (fs.existsSync(b64DiskPath)) {
+      try {
+        dataUrl = fs.readFileSync(b64DiskPath, "utf-8");
+        memStore.pdfDataUrls.set(id, dataUrl);
+      } catch {}
+    }
+  }
+  if (dataUrl) {
+    const commaIdx = dataUrl.indexOf(",");
+    const base64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    const buf = Buffer.from(base64, "base64");
+    memStore.pdfBuffers.set(id, buf);
+    return buf;
+  }
+  return null;
+}
+
 app.get("/api/uploaded-notes", (_req, res) => {
   res.json({ success: true, notes: loadUploadedNotes() });
 });
@@ -7318,27 +7360,175 @@ app.get("/api/uploaded-notes", (_req, res) => {
 app.get("/api/uploaded-notes/:id/file", (req, res) => {
   try {
     const { id } = req.params;
-    let dataUrl = memStore.pdfDataUrls.get(id);
-    if (!dataUrl) {
-      const diskPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${id.replace(/[^a-zA-Z0-9_-]/g, "_")}.b64`);
-      if (fs.existsSync(diskPath)) {
-        dataUrl = fs.readFileSync(diskPath, "utf-8");
-        memStore.pdfDataUrls.set(id, dataUrl);
-      }
-    }
-    if (!dataUrl) {
+    const buffer = getUploadedPdfBuffer(id);
+    if (!buffer) {
       return res.status(404).json({ success: false, error: "PDF file binary not found on server." });
     }
-    const commaIdx = dataUrl.indexOf(",");
-    const base64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
     const note = loadUploadedNotes().find((n) => n.id === id);
     const filename = String(note?.fileName || `${note?.title || id}.pdf`).replace(/["\r\n]/g, "");
+    const total = buffer.length;
+
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+
+    const range = req.headers.range;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (match) {
+        const start = match[1] ? parseInt(match[1], 10) : 0;
+        const end = match[2] ? Math.min(total - 1, parseInt(match[2], 10)) : total - 1;
+        if (start >= 0 && start < total && end >= start) {
+          res.status(206);
+          res.setHeader("Content-Range", `bytes ${start}-${end}/${total}`);
+          res.setHeader("Content-Length", String(end - start + 1));
+          return res.send(buffer.subarray(start, end + 1));
+        }
+      }
+    }
+
+    res.setHeader("Content-Length", String(total));
     return res.send(buffer);
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || "Failed to serve PDF binary" });
+  }
+});
+
+// Chunked Large PDF Upload Routes (supports 100MB+ PDFs across Express & reverse proxies)
+app.post("/api/uploaded-notes/upload/init", (req, res) => {
+  try {
+    const { noteId, totalChunks } = req.body || {};
+    const cleanId = String(noteId || `uploaded-pdf-${Date.now()}`);
+    const safeId = sanitizeNoteFileId(cleanId);
+    const count = Math.max(1, Number(totalChunks) || 1);
+
+    memStore.pdfUploadSessions.set(cleanId, {
+      chunks: new Array<Buffer>(count),
+      createdAt: Date.now(),
+    });
+
+    try {
+      if (!fs.existsSync(UPLOADED_PDF_BLOBS_DIR)) {
+        fs.mkdirSync(UPLOADED_PDF_BLOBS_DIR, { recursive: true });
+      }
+      const partPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.pdf.part`);
+      if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+    } catch {}
+
+    return res.json({ success: true, noteId: cleanId });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to initialize chunked upload" });
+  }
+});
+
+app.post("/api/uploaded-notes/upload/chunk", (req, res) => {
+  try {
+    const { noteId, chunkIndex, base64Data } = req.body || {};
+    if (!noteId || typeof chunkIndex !== "number" || typeof base64Data !== "string" || !base64Data) {
+      return res.status(400).json({ success: false, error: "noteId, chunkIndex, and base64Data are required" });
+    }
+    const cleanId = String(noteId);
+    const commaIdx = base64Data.indexOf(",");
+    const rawB64 = commaIdx !== -1 ? base64Data.slice(commaIdx + 1) : base64Data;
+    const chunkBuf = Buffer.from(rawB64, "base64");
+
+    let session = memStore.pdfUploadSessions.get(cleanId);
+    if (!session) {
+      session = { chunks: [], createdAt: Date.now() };
+      memStore.pdfUploadSessions.set(cleanId, session);
+    }
+    session.chunks[chunkIndex] = chunkBuf;
+
+    return res.json({ success: true, chunkIndex, bytes: chunkBuf.length });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to store upload chunk" });
+  }
+});
+
+app.post("/api/uploaded-notes/upload/complete", (req, res) => {
+  try {
+    const {
+      id,
+      title,
+      description,
+      subject,
+      grade,
+      category,
+      fileName,
+      pageCount,
+      fileSizeKb,
+      fileUrl,
+      storageType,
+      chunkCount,
+      storagePath,
+      uploadedBy,
+      tags,
+    } = req.body || {};
+
+    const noteId = String(id || "");
+    if (!noteId || !title) {
+      return res.status(400).json({ success: false, error: "Note ID and title are required" });
+    }
+
+    const session = memStore.pdfUploadSessions.get(noteId);
+    const safeId = sanitizeNoteFileId(noteId);
+
+    if (session && session.chunks.length > 0) {
+      const validParts = session.chunks.filter((c): c is Buffer => Buffer.isBuffer(c));
+      const fullBuffer = Buffer.concat(validParts);
+      memStore.pdfBuffers.set(noteId, fullBuffer);
+      try {
+        if (!fs.existsSync(UPLOADED_PDF_BLOBS_DIR)) {
+          fs.mkdirSync(UPLOADED_PDF_BLOBS_DIR, { recursive: true });
+        }
+        fs.writeFileSync(path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.pdf`), fullBuffer);
+      } catch {}
+      memStore.pdfUploadSessions.delete(noteId);
+    }
+
+    const resolvedFileUrl =
+      fileUrl && !String(fileUrl).startsWith("blob:")
+        ? String(fileUrl)
+        : `/api/uploaded-notes/${noteId}/file`;
+
+    const notes = loadUploadedNotes().filter((n) => n.id !== noteId);
+    const newDoc = {
+      id: noteId,
+      title: String(title).trim(),
+      description: String(description || `Original PDF notes for ${subject || "Study"} (${grade || "All Levels"})`),
+      subject: String(subject || "Physics"),
+      grade: String(grade || "12th Class"),
+      category: String(category || "Complete Study Guide"),
+      fileName: String(fileName || `${title}.pdf`),
+      pageCount: Number(pageCount) || 15,
+      fileSizeKb: Number(fileSizeKb) || 1024,
+      downloadCount: 0,
+      lastUpdated: new Date().toISOString().split("T")[0],
+      fileUrl: resolvedFileUrl,
+      storageType: storageType || "server_api",
+      chunkCount: Number(chunkCount) || 0,
+      storagePath: storagePath || undefined,
+      uploadedBy: uploadedBy || "admin0011",
+      tags: Array.isArray(tags)
+        ? tags
+        : [String(subject || "study").toLowerCase(), String(grade || "all").toLowerCase().replace(/\s+/g, "")],
+    };
+    notes.unshift(newDoc);
+    saveUploadedNotes(notes);
+
+    recordAuditLog({
+      category: "admin",
+      action: "PDF_NOTE_UPLOADED",
+      actor: String(uploadedBy || "admin0011"),
+      target: `${newDoc.subject} (${newDoc.grade})`,
+      details: `Uploaded chunked verbatim PDF "${newDoc.title}" (${newDoc.fileSizeKb} KB)`,
+      status: "success",
+    });
+
+    return res.json({ success: true, note: newDoc });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to finalize chunked upload" });
   }
 });
 
@@ -7368,19 +7558,20 @@ app.post("/api/uploaded-notes", (req, res) => {
     }
 
     const noteId = String(id || `uploaded-pdf-${Date.now()}`);
+    const safeId = sanitizeNoteFileId(noteId);
     let resolvedFileUrl = String(fileUrl || "");
 
     if (typeof dataUrl === "string" && dataUrl.startsWith("data:")) {
+      const commaIdx = dataUrl.indexOf(",");
+      const rawB64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+      const buf = Buffer.from(rawB64, "base64");
+      memStore.pdfBuffers.set(noteId, buf);
       memStore.pdfDataUrls.set(noteId, dataUrl);
       try {
         if (!fs.existsSync(UPLOADED_PDF_BLOBS_DIR)) {
           fs.mkdirSync(UPLOADED_PDF_BLOBS_DIR, { recursive: true });
         }
-        fs.writeFileSync(
-          path.join(UPLOADED_PDF_BLOBS_DIR, `${noteId.replace(/[^a-zA-Z0-9_-]/g, "_")}.b64`),
-          dataUrl,
-          "utf-8"
-        );
+        fs.writeFileSync(path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.pdf`), buf);
       } catch {}
       if (!resolvedFileUrl || resolvedFileUrl.startsWith("blob:")) {
         resolvedFileUrl = `/api/uploaded-notes/${noteId}/file`;
@@ -7400,7 +7591,6 @@ app.post("/api/uploaded-notes", (req, res) => {
       fileSizeKb: Number(fileSizeKb) || 1024,
       downloadCount: 0,
       lastUpdated: new Date().toISOString().split("T")[0],
-      isFeatured: true,
       fileUrl: resolvedFileUrl,
       storageType: storageType || "server_api",
       chunkCount: Number(chunkCount) || 0,
@@ -7409,18 +7599,6 @@ app.post("/api/uploaded-notes", (req, res) => {
       tags: Array.isArray(tags)
         ? tags
         : [String(subject || "study").toLowerCase(), String(grade || "all").toLowerCase().replace(/\s+/g, "")],
-      sections: [
-        {
-          heading: "Uploaded PDF Study Notes",
-          subheading: String(title).trim(),
-          content: [
-            `• Document Title: ${title}`,
-            `• Grade Level: ${grade || "12th Class"}`,
-            `• Subject: ${subject || "Physics"}`,
-            `• Access: Available verbatim for preview & direct PDF download.`,
-          ],
-        },
-      ],
     };
     notes.unshift(newDoc);
     saveUploadedNotes(notes);
@@ -7469,14 +7647,19 @@ app.patch("/api/uploaded-notes/:id", (req, res) => {
 app.delete("/api/uploaded-notes/:id", (req, res) => {
   try {
     const { id } = req.params;
+    const safeId = sanitizeNoteFileId(id);
     const notes = loadUploadedNotes();
     const removed = notes.find((n) => n.id === id);
     const remaining = notes.filter((n) => n.id !== id);
     saveUploadedNotes(remaining);
     memStore.pdfDataUrls.delete(id);
+    memStore.pdfBuffers.delete(id);
+    memStore.pdfUploadSessions.delete(id);
     try {
-      const diskPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${id.replace(/[^a-zA-Z0-9_-]/g, "_")}.b64`);
-      if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+      const b64Path = path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.b64`);
+      if (fs.existsSync(b64Path)) fs.unlinkSync(b64Path);
+      const pdfPath = path.join(UPLOADED_PDF_BLOBS_DIR, `${safeId}.pdf`);
+      if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
     } catch {}
 
     recordAuditLog({

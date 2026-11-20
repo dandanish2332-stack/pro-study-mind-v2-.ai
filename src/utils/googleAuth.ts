@@ -14,12 +14,9 @@ export const GMAIL_SCOPES = [
 
 const ADMIN_EMAIL = "dandanish2332@gmail.com";
 
-const provider = new GoogleAuthProvider();
-GMAIL_SCOPES.forEach((scope) => provider.addScope(scope));
-provider.setCustomParameters({ prompt: "select_account" });
-
 // Strictly in-memory OAuth access token cache — NEVER persisted to localStorage or sessionStorage
 let cachedAccessToken: string | null = null;
+let cachedTokenHasGmailScopes = false;
 let cachedTokenTimestamp = 0;
 let isSigningIn = false;
 
@@ -50,7 +47,7 @@ export function isFirebaseAdminSessionActive(): boolean {
 }
 
 export function hasGoogleGmailSession(): boolean {
-  return Boolean(cachedAccessToken);
+  return Boolean(cachedAccessToken && cachedTokenHasGmailScopes);
 }
 
 export function initGoogleAuth(
@@ -65,12 +62,14 @@ export function initGoogleAuth(
           onSuccess(user);
         } else {
           cachedAccessToken = null;
+          cachedTokenHasGmailScopes = false;
           cachedTokenTimestamp = 0;
           if (onFailure) onFailure();
         }
       },
       (err) => {
         cachedAccessToken = null;
+        cachedTokenHasGmailScopes = false;
         cachedTokenTimestamp = 0;
         if (onFailure) onFailure(err);
       }
@@ -83,11 +82,10 @@ export function initGoogleAuth(
 
 export async function googleSignIn(options?: {
   forceConsent?: boolean;
-  emailOverride?: string;
-  nameOverride?: string;
+  includeGmailScopes?: boolean;
 }): Promise<{
   user: User;
-  accessToken: string;
+  accessToken: string | null;
   email: string;
   name: string;
   avatarUrl?: string;
@@ -97,24 +95,32 @@ export async function googleSignIn(options?: {
   }
   isSigningIn = true;
   try {
+    const includeGmail = Boolean(options?.includeGmailScopes);
     const activeProvider = new GoogleAuthProvider();
-    GMAIL_SCOPES.forEach((scope) => activeProvider.addScope(scope));
+    if (includeGmail) {
+      GMAIL_SCOPES.forEach((scope) => activeProvider.addScope(scope));
+    }
     activeProvider.setCustomParameters({
       prompt: options?.forceConsent ? "consent select_account" : "select_account",
-      ...(options?.emailOverride ? { login_hint: options.emailOverride } : {}),
     });
 
     const result = await signInWithPopup(auth, activeProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    const accessToken =
-      credential?.accessToken || `ya29.google_workspace_oauth_token_${Date.now()}`;
-    cachedAccessToken = accessToken;
-    cachedTokenTimestamp = Date.now();
-    const email = (result.user.email || options?.emailOverride || "").toLowerCase();
+    const accessToken = credential?.accessToken || null;
+    if (accessToken && includeGmail) {
+      cachedAccessToken = accessToken;
+      cachedTokenHasGmailScopes = true;
+      cachedTokenTimestamp = Date.now();
+    } else if (accessToken) {
+      cachedAccessToken = accessToken;
+      cachedTokenTimestamp = Date.now();
+    }
+
+    const email = (result.user.email || "").toLowerCase();
     if (!email) {
       throw new Error("Google account did not return an email address.");
     }
-    const name = result.user.displayName || options?.nameOverride || email.split("@")[0] || "Google User";
+    const name = result.user.displayName || email.split("@")[0] || "Google User";
     const avatarUrl = result.user.photoURL || undefined;
 
     return {
@@ -125,50 +131,21 @@ export async function googleSignIn(options?: {
       avatarUrl,
     };
   } catch (popupErr: any) {
-    // Only use selected fallback account if caller explicitly selected an email in the fallback picker
-    if (options?.emailOverride) {
-      const cleanEmail = options.emailOverride.trim().toLowerCase();
-      const fallbackName = options.nameOverride?.trim() || cleanEmail.split("@")[0];
-      const fallbackAccessToken = `ya29.google_workspace_oauth_token_${Date.now()}`;
-      cachedAccessToken = fallbackAccessToken;
-      cachedTokenTimestamp = Date.now();
-
-      return {
-        user: {
-          uid: `google-usr-${cleanEmail.replace(/[^a-z0-9]/gi, "").slice(0, 14)}`,
-          email: cleanEmail,
-          displayName: fallbackName,
-          photoURL: undefined,
-          emailVerified: true,
-          isAnonymous: false,
-          metadata: {},
-          providerData: [],
-          refreshToken: "",
-          tenantId: null,
-          delete: async () => {},
-          getIdToken: async () => fallbackAccessToken,
-          getIdTokenResult: async () => ({
-            token: fallbackAccessToken,
-            authTime: "",
-            issuedAt: "",
-            expirationTime: "",
-            signInProvider: "google.com",
-            signInSecondFactor: null,
-            claims: {},
-          }),
-          reload: async () => {},
-          toJSON: () => ({}),
-        } as unknown as User,
-        accessToken: fallbackAccessToken,
-        email: cleanEmail,
-        name: fallbackName,
-        avatarUrl: undefined,
-      };
-    }
-
     const code = popupErr?.code || "";
+    const host = typeof window !== "undefined" ? window.location.hostname : "";
     if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
       throw new Error("Google sign-in popup was closed before selecting an account.");
+    }
+    if (code === "auth/popup-blocked") {
+      throw new Error("Browser blocked the Google Sign-In popup. Please allow popups for this site and try again.");
+    }
+    if (code === "auth/unauthorized-domain") {
+      throw new Error(
+        `This domain (${host}) is not listed in Firebase Authorized Domains yet. Add "${host}" in Firebase Console -> Authentication -> Settings -> Authorized domains.`
+      );
+    }
+    if (code === "auth/operation-not-allowed") {
+      throw new Error("Google Sign-In is not enabled in Firebase Authentication Console.");
     }
     throw popupErr;
   } finally {
@@ -185,6 +162,7 @@ export async function getValidGoogleAccessToken(forceRefresh = false): Promise<s
 
 export async function googleLogout(): Promise<void> {
   cachedAccessToken = null;
+  cachedTokenHasGmailScopes = false;
   cachedTokenTimestamp = 0;
   try {
     await signOut(auth);

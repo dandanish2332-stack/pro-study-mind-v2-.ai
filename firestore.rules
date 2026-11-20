@@ -113,7 +113,7 @@ service cloud.firestore {
         data.lastUpdated is string && data.lastUpdated.size() >= 1 && data.lastUpdated.size() <= 64 &&
         data.fileUrl is string && data.fileUrl.size() <= 2000 &&
         data.storageType in ['firebase_storage', 'firestore_chunks', 'static_asset', 'server_api'] &&
-        (!('chunkCount' in data) || (data.chunkCount is number && data.chunkCount >= 0 && data.chunkCount <= 100)) &&
+        (!('chunkCount' in data) || (data.chunkCount is number && data.chunkCount >= 0 && data.chunkCount <= 500)) &&
         (!('storagePath' in data) || (data.storagePath is string && data.storagePath.size() <= 500)) &&
         (!('uploadedBy' in data) || (data.uploadedBy is string && data.uploadedBy.size() <= 128)) &&
         (!('tags' in data) || (data.tags is list && data.tags.size() <= 12 && (data.tags.size() == 0 || data.tags[0] is string)));
@@ -124,7 +124,7 @@ service cloud.firestore {
         data.keys().hasOnly(['noteId', 'chunkIndex', 'totalChunks', 'data']) &&
         isValidId(data.noteId) &&
         data.chunkIndex is number && data.chunkIndex >= 0 &&
-        data.totalChunks is number && data.totalChunks >= 1 && data.totalChunks <= 100 &&
+        data.totalChunks is number && data.totalChunks >= 1 && data.totalChunks <= 500 &&
         data.data is string && data.data.size() >= 1 && data.data.size() <= 750000;
     }
 
@@ -233,7 +233,7 @@ service cloud.firestore {
     // Chunked verbatim PDF bytes stored in Firestore (non-PII)
     match /uploaded_pdf_chunks/{chunkId} {
       allow get: if isValidId(chunkId);
-      allow list: if existing().noteId is string && existing().chunkIndex is number;
+      allow list: if existing().noteId is string;
       allow create: if isAdmin() && isValidId(chunkId) && isValidUploadedPdfChunk(incoming()) &&
         exists(/databases/$(database)/documents/uploaded_notes/$(incoming().noteId));
       allow update: if false;
