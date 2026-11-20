@@ -93,7 +93,7 @@ export interface AuthContextType {
     message: string,
     type?: string,
     targetGrade?: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<{ success: boolean; syncedToFirestore?: boolean; error?: string }>;
   fetchStudentLiveDetailsByAdmin: (userId: string) => Promise<{
     success: boolean;
     details?: StudentIsolatedData;
@@ -1945,7 +1945,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     message: string,
     type = "urgent",
     targetGrade = "All Levels"
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; syncedToFirestore?: boolean; error?: string }> => {
     const createdBy = currentUserRef.current?.name || "Danish (Master Admin)";
     const fallbackAnn: ServerAnnouncement = {
       id: `ann-${Date.now()}`,
@@ -1977,22 +1977,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const syncedFirestore = await syncAnnouncementToFirestore(annToSync);
 
       if ((!res.ok || !res.data?.success) && !syncedFirestore) {
-        return { success: false, error: res.error || res.data?.error || "Failed to publish announcement on server" };
+        return { success: false, syncedToFirestore: false, error: res.error || res.data?.error || "Failed to publish announcement on server" };
       }
 
       if (currentUserRef.current?.id) {
         notifyUserStateUpdated(currentUserRef.current.id);
       }
-      return { success: true };
+      return { success: true, syncedToFirestore: syncedFirestore };
     } catch (err: any) {
       const syncedFirestore = await syncAnnouncementToFirestore(fallbackAnn);
       if (syncedFirestore) {
         if (currentUserRef.current?.id) {
           notifyUserStateUpdated(currentUserRef.current.id);
         }
-        return { success: true };
+        return { success: true, syncedToFirestore: true };
       }
-      return { success: false, error: err?.message || "Network error publishing announcement" };
+      return { success: false, syncedToFirestore: false, error: err?.message || "Network error publishing announcement" };
     }
   };
 

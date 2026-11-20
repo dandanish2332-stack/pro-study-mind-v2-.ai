@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { Component, ReactNode, useState, useEffect } from "react";
 import { AppProvider, useApp } from "./context/AppContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { LoginView } from "./components/LoginView";
@@ -214,12 +214,71 @@ const AppContent: React.FC = () => {
   );
 };
 
+interface AppErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
+  declare props: { children: ReactNode };
+  declare setState: (state: Partial<AppErrorBoundaryState>) => void;
+  state: AppErrorBoundaryState = { hasError: false, message: "" };
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    let readable = error?.message || "An unexpected workspace error occurred.";
+    try {
+      const parsed = JSON.parse(readable);
+      if (parsed && typeof parsed.error === "string") {
+        readable = `Cloud Sync Notice (${parsed.operationType || "operation"}): ${parsed.error}`;
+      }
+    } catch {}
+    return { hasError: true, message: readable };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error("Workspace ErrorBoundary caught:", error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+          <div className="max-w-md w-full rounded-3xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-center">
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 font-black text-xl">
+              !
+            </div>
+            <h1 className="text-lg font-extrabold tracking-tight">Workspace Interrupted</h1>
+            <p className="text-xs text-slate-300 leading-relaxed break-words">{this.state.message}</p>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                onClick={() => this.setState({ hasError: false, message: "" })}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-colors cursor-pointer"
+              >
+                Recover Workspace
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Reload App
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
-    <AuthProvider>
-      <AppProvider>
-        <AppContent />
-      </AppProvider>
-    </AuthProvider>
+    <AppErrorBoundary>
+      <AuthProvider>
+        <AppProvider>
+          <AppContent />
+        </AppProvider>
+      </AuthProvider>
+    </AppErrorBoundary>
   );
 }

@@ -107,7 +107,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
                 >
                   <div className="flex items-center gap-3">
                     <Icon className={`w-4 h-4 ${isActive ? "text-white" : "text-slate-500 dark:text-slate-400"}`} />
-                    <span style={item.id === "pdfs" ? { color: "#ffffff" } : undefined}>{item.label}</span>
+                    <span>{item.label}</span>
                   </div>
                   {item.badge && (
                     <span

@@ -1468,21 +1468,31 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     e.preventDefault();
     if (!broadcastTitle.trim() || !broadcastMessage.trim()) return;
     setIsSendingBroadcast(true);
-    const res = await broadcastAnnouncementByAdmin(
-      broadcastTitle.trim(),
-      broadcastMessage.trim(),
-      broadcastType,
-      broadcastGrade
-    );
-    setIsSendingBroadcast(false);
-    if (!res.success) {
-      showToast(res.error || "Failed to send broadcast.", "error");
-    } else {
-      setBroadcastTitle("");
-      setBroadcastMessage("");
-      fetchAnnouncements();
-      syncAnnouncementsNow();
-      showToast("Broadcast published to backend & Firestore and queued for student notifications.");
+    try {
+      if (!isFirebaseAdminSessionActive()) {
+        await ensureGoogleAdminForGlobalPublish().catch(() => false);
+      }
+      const res = await broadcastAnnouncementByAdmin(
+        broadcastTitle.trim(),
+        broadcastMessage.trim(),
+        broadcastType,
+        broadcastGrade
+      );
+      if (!res.success) {
+        showToast(res.error || "Failed to send broadcast.", "error");
+      } else {
+        setBroadcastTitle("");
+        setBroadcastMessage("");
+        fetchAnnouncements();
+        syncAnnouncementsNow();
+        showToast(
+          res.syncedToFirestore
+            ? "Broadcast published globally to Backend & Firestore — live for all students!"
+            : "Broadcast saved on backend server. Verify Google Sync (dandanish2332@gmail.com) to publish globally across all devices."
+        );
+      }
+    } finally {
+      setIsSendingBroadcast(false);
     }
   };
 
@@ -1528,6 +1538,9 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     if (!settingsForm) return;
     setIsSavingSettings(true);
     try {
+      if (!isFirebaseAdminSessionActive()) {
+        await ensureGoogleAdminForGlobalPublish().catch(() => false);
+      }
       const payload: PlatformSettings = {
         ...settingsForm,
         updatedAt: new Date().toISOString(),
@@ -1553,8 +1566,8 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
         }
         showToast(
           firestoreSaved
-            ? "Saved platform governance settings to Backend & Firestore globally!"
-            : "Saved platform settings on backend server."
+            ? "Saved platform governance settings to Backend & Firestore globally — active on all devices!"
+            : "Saved on backend server. Connect Google Sync (dandanish2332@gmail.com) to apply globally across all devices."
         );
       } else {
         showToast(apiRes.error || apiRes.data?.error || "Failed to save settings.", "error");

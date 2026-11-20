@@ -784,6 +784,26 @@ export async function fetchPlatformSettingsFromFirestore(): Promise<PlatformSett
   return readLocalCache<PlatformSettings | null>(LOCAL_PLATFORM_SETTINGS_CACHE_KEY, null);
 }
 
+export function subscribeToPlatformSettings(
+  onUpdate: (settings: PlatformSettings) => void,
+  onError?: (err: unknown) => void
+): () => void {
+  return onSnapshot(
+    doc(db, "platform_settings", "global"),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as PlatformSettings;
+        writeLocalCache(LOCAL_PLATFORM_SETTINGS_CACHE_KEY, data);
+        onUpdate(data);
+      }
+    },
+    (err) => {
+      console.warn("Firestore live platform_settings subscription notice:", err);
+      onError?.(err);
+    }
+  );
+}
+
 export async function syncAnnouncementToFirestore(announcement: ServerAnnouncement): Promise<boolean> {
   if (!isFirebaseAdminSessionActive()) return false;
   try {
@@ -829,4 +849,24 @@ export async function fetchAnnouncementsFromFirestore(): Promise<ServerAnnouncem
   } catch {
     return readLocalCache<ServerAnnouncement[]>(LOCAL_ANNOUNCEMENTS_CACHE_KEY, []);
   }
+}
+
+export function subscribeToAnnouncements(
+  onUpdate: (announcements: ServerAnnouncement[]) => void,
+  onError?: (err: unknown) => void
+): () => void {
+  return onSnapshot(
+    collection(db, "announcements"),
+    (snap) => {
+      const items = snap.docs
+        .map((d) => d.data() as ServerAnnouncement)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      writeLocalCache(LOCAL_ANNOUNCEMENTS_CACHE_KEY, items);
+      onUpdate(items);
+    },
+    (err) => {
+      console.warn("Firestore live announcements subscription notice:", err);
+      onError?.(err);
+    }
+  );
 }

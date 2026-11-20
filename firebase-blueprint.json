@@ -178,6 +178,12 @@
         "uploadedBy": {
           "type": "string",
           "maxLength": 128
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [

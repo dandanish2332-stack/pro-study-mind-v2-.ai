@@ -38,6 +38,8 @@ import { safeJsonFetch } from "../utils/safeFetch";
 import {
   fetchPlatformSettingsFromFirestore,
   fetchAnnouncementsFromFirestore,
+  subscribeToPlatformSettings,
+  subscribeToAnnouncements,
 } from "../services/cloudSyncService";
 
 interface AppContextType {
@@ -289,28 +291,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [currentUser?.id, currentUser?.grade, currentUser?.name]);
 
-  const syncAnnouncementsNow = useCallback(async () => {
-    const userId = currentUser?.id;
-    if (!userId) return;
-    try {
-      const [apiRes, firestoreAnns] = await Promise.all([
-        safeJsonFetch<{ success: boolean; announcements?: ServerAnnouncement[] }>("/api/announcements"),
-        fetchAnnouncementsFromFirestore(),
-      ]);
-
-      const mergedMap = new Map<string, ServerAnnouncement>();
-      if (apiRes.ok && apiRes.data?.success && Array.isArray(apiRes.data.announcements)) {
-        for (const a of apiRes.data.announcements) mergedMap.set(a.id, a);
-      }
-      for (const a of firestoreAnns) {
-        mergedMap.set(a.id, a);
-      }
-
-      const allAnnouncements = Array.from(mergedMap.values());
-      if (allAnnouncements.length === 0) return;
+  const applyIncomingAnnouncements = useCallback(
+    (incomingList: ServerAnnouncement[]) => {
+      const userId = currentUser?.id;
+      if (!userId || incomingList.length === 0) return;
 
       const seenIds = getUserItem<string[]>(userId, "seen_announcement_ids", []);
-      const unseen = allAnnouncements.filter(
+      const unseen = incomingList.filter(
         (ann) =>
           !seenIds.includes(ann.id) &&
           (ann.targetGrade === "All Levels" ||
@@ -340,17 +327,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return merged;
         });
       }
+    },
+    [currentUser?.id, currentUser?.grade, currentUser?.isAdmin]
+  );
+
+  const syncAnnouncementsNow = useCallback(async () => {
+    const userId = currentUser?.id;
+    if (!userId) return;
+    try {
+      const [apiRes, firestoreAnns] = await Promise.all([
+        safeJsonFetch<{ success: boolean; announcements?: ServerAnnouncement[] }>("/api/announcements"),
+        fetchAnnouncementsFromFirestore(),
+      ]);
+
+      const mergedMap = new Map<string, ServerAnnouncement>();
+      if (apiRes.ok && apiRes.data?.success && Array.isArray(apiRes.data.announcements)) {
+        for (const a of apiRes.data.announcements) mergedMap.set(a.id, a);
+      }
+      for (const a of firestoreAnns) {
+        mergedMap.set(a.id, a);
+      }
+
+      applyIncomingAnnouncements(Array.from(mergedMap.values()));
     } catch {
       // ignore offline
     }
-  }, [currentUser?.id, currentUser?.grade, currentUser?.isAdmin]);
+  }, [currentUser?.id, applyIncomingAnnouncements]);
 
-  // Pull unseen server broadcasts on login and listen for admin state mutations
+  // Pull unseen server broadcasts on login and subscribe to real-time Firestore announcements
   useEffect(() => {
     const userId = currentUser?.id;
     if (!userId) return;
 
     syncAnnouncementsNow();
+    const unsubAnnouncements = subscribeToAnnouncements((anns) => {
+      applyIncomingAnnouncements(anns);
+    });
 
     const handleStateUpdated = (ev: Event) => {
       const detail = (ev as CustomEvent<{ userId?: string }>).detail;
@@ -369,9 +381,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     window.addEventListener("prostudymind:user-state-updated", handleStateUpdated);
     return () => {
+      unsubAnnouncements();
       window.removeEventListener("prostudymind:user-state-updated", handleStateUpdated);
     };
-  }, [currentUser?.id, syncAnnouncementsNow]);
+  }, [currentUser?.id, syncAnnouncementsNow, applyIncomingAnnouncements]);
 
   const refreshPlatformSettings = useCallback(async () => {
     try {
@@ -394,6 +407,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     refreshPlatformSettings();
+    const unsubSettings = subscribeToPlatformSettings((fsSettings) => {
+      setPlatformSettings((prev) => {
+        if (!prev) return fsSettings;
+        const prevTime = new Date(prev.updatedAt || 0).getTime();
+        const fsTime = new Date(fsSettings.updatedAt || 0).getTime();
+        return fsTime >= prevTime ? fsSettings : prev;
+      });
+    });
     const interval = setInterval(() => {
       refreshPlatformSettings();
       syncAnnouncementsNow();
@@ -404,6 +425,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     window.addEventListener("focus", onFocus);
     return () => {
+      unsubSettings();
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
