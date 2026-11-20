@@ -68,6 +68,7 @@ import {
   isFirebaseAdminSessionActive,
 } from "../utils/googleAuth";
 import { safeJsonFetch } from "../utils/safeFetch";
+import { auth } from "../firebase";
 import {
   UploadedPdfNoteRecord,
   uploadPdfToCloud,
@@ -355,6 +356,8 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
   const [deletingPdfId, setDeletingPdfId] = useState<string | null>(null);
   const [syncingPdfId, setSyncingPdfId] = useState<string | null>(null);
   const [isSyncingAllLocalPdfs, setIsSyncingAllLocalPdfs] = useState<boolean>(false);
+  const [autoOpenPdfNotesAfterUpload, setAutoOpenPdfNotesAfterUpload] = useState<boolean>(true);
+  const [lastUploadedPdfBanner, setLastUploadedPdfBanner] = useState<UploadedPdfNoteRecord | null>(null);
   const pdfFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const loadUploadedNotes = useCallback(async () => {
@@ -427,6 +430,10 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     setUploadStatusText("Verifying Global Firestore Admin session...");
 
     try {
+      try {
+        await auth.authStateReady();
+      } catch {}
+
       if (!isFirebaseAdminSessionActive()) {
         setUploadStatusText("Please complete Google Sign-In (dandanish2332@gmail.com) so everyone can see this PDF...");
         await ensureGoogleAdminForGlobalPublish();
@@ -450,8 +457,10 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
         },
       });
 
+      setLastUploadedPdfBanner(result.note);
+
       if (result.isGlobalCloud) {
-        showToast(`Published "${result.note.title}" globally to Firestore — now visible to everyone on all devices!`);
+        showToast(`Published "${result.note.title}" globally to PDF Notes Mode — now visible to everyone on all devices!`);
       } else {
         showToast(
           `Uploaded "${result.note.title}" (${result.storageBackend}). Note: PDFs over 260 MB require backend storage.`,
@@ -466,6 +475,12 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
         pdfFileInputRef.current.value = "";
       }
       await loadUploadedNotes();
+
+      if (result.isGlobalCloud && autoOpenPdfNotesAfterUpload && setActiveTab) {
+        setTimeout(() => {
+          setActiveTab("pdfnotes");
+        }, 450);
+      }
     } catch (err: any) {
       showToast(
         err?.message ||
@@ -4018,11 +4033,40 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
                 </div>
               )}
 
-              <div className="flex justify-end pt-2">
+              {lastUploadedPdfBanner && (
+                <div className="p-3.5 rounded-2xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>
+                      <strong>"{lastUploadedPdfBanner.title}"</strong> is now live in <strong>PDF Notes Mode</strong> for all users ({lastUploadedPdfBanner.grade} · {lastUploadedPdfBanner.subject}).
+                    </span>
+                  </div>
+                  {setActiveTab && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("pdfnotes")}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Open PDF Notes Mode →
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoOpenPdfNotesAfterUpload}
+                    onChange={(e) => setAutoOpenPdfNotesAfterUpload(e.target.checked)}
+                    className="rounded border-slate-600 text-indigo-500 focus:ring-indigo-500"
+                  />
+                  <span>Automatically open PDF Notes Mode after publishing</span>
+                </label>
                 <button
                   type="submit"
                   disabled={isUploadingPdf || !selectedPdfFile}
-                  className="flex items-center gap-2 px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+                  className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
                 >
                   <Upload className="w-4 h-4" />
                   {isUploadingPdf ? "Uploading..." : "Upload & Publish to PDF Notes Mode"}

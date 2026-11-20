@@ -54,10 +54,17 @@ import {
 } from "../services/curriculumNotesEngine";
 import { useAuth } from "../context/AuthContext";
 import { getUserItem, setUserItem, persistUserKeyToServer, logUserActivityToServer } from "../utils/userStorage";
+import {
+  UploadedPdfNoteRecord,
+  fetchAllPdfNotes,
+  subscribeToPdfNotes,
+  downloadVerbatimPdf,
+} from "../services/cloudSyncService";
 
 interface StudentPDFViewProps {
   initialSubjectFilter?: string | null;
   initialGradeFilter?: string | null;
+  onOpenPdfNotesMode?: () => void;
 }
 
 interface ReviewQuestion {
@@ -428,8 +435,19 @@ function renderTextbookContentItem(para: string, pIdx: number, secHeading: strin
 export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
   initialSubjectFilter,
   initialGradeFilter,
+  onOpenPdfNotesMode,
 }) => {
   const { currentUser } = useAuth();
+  const [adminUploadedPdfs, setAdminUploadedPdfs] = useState<UploadedPdfNoteRecord[]>([]);
+  const [downloadingUploadedId, setDownloadingUploadedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchAllPdfNotes().then(setAdminUploadedPdfs).catch(() => {});
+    const unsub = subscribeToPdfNotes((notes) => {
+      setAdminUploadedPdfs(notes);
+    });
+    return () => unsub();
+  }, []);
 
   const [pdfList, setPdfList] = useState<StudentPDFDocument[]>(() => {
     const saved = getUserItem<StudentPDFDocument[]>(currentUser?.id, "custom_pdfs", []);
@@ -932,6 +950,94 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 📄 LIVE ADMIN-UPLOADED ORIGINAL PDFS (FROM PDF NOTES MODE) */}
+      {adminUploadedPdfs.length > 0 && (
+        <div className="p-5 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-emerald-500/30 shadow-lg space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+                <FileText className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                  Official Uploaded PDF Notes ({adminUploadedPdfs.length})
+                </h2>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Original verbatim PDF files published by the Master Administrator — available immediately for all students.
+                </p>
+              </div>
+            </div>
+            {onOpenPdfNotesMode && (
+              <button
+                type="button"
+                onClick={onOpenPdfNotesMode}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 cursor-pointer transition-colors"
+              >
+                <span>Open Full PDF Notes Mode</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {adminUploadedPdfs.slice(0, 6).map((upPdf) => (
+              <div
+                key={upPdf.id}
+                className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col justify-between gap-3"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 text-[10px] font-bold">
+                      {upPdf.grade}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 text-[10px] font-bold">
+                      {upPdf.subject}
+                    </span>
+                  </div>
+                  <h3 className="text-xs font-extrabold text-slate-900 dark:text-white line-clamp-1">
+                    {upPdf.title}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">
+                    {upPdf.fileName}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {onOpenPdfNotesMode && (
+                    <button
+                      type="button"
+                      onClick={onOpenPdfNotesMode}
+                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-[11px] font-bold cursor-pointer"
+                    >
+                      Read in PDF Mode
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={downloadingUploadedId === upPdf.id}
+                    onClick={async () => {
+                      setDownloadingUploadedId(upPdf.id);
+                      try {
+                        await downloadVerbatimPdf(upPdf);
+                        showToast(`Downloading "${upPdf.fileName}"`);
+                      } catch (err: any) {
+                        showToast(err?.message || "Failed to download PDF.");
+                      } finally {
+                        setDownloadingUploadedId(null);
+                      }
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1 py-1.5 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>{downloadingUploadedId === upPdf.id ? "Loading..." : "Download PDF"}</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ⚡ INSTANT AI TOPIC STUDY GUIDE & EXAM KEYS GENERATOR */}
       <div className="p-5 sm:p-7 rounded-3xl bg-gradient-to-r from-indigo-900/40 via-purple-900/30 to-slate-900 border border-indigo-500/30 shadow-lg space-y-4">

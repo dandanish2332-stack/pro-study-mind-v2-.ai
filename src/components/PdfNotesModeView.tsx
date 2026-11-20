@@ -286,7 +286,7 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
           </div>
           <div className="p-3 rounded-2xl bg-white/5 border border-white/10">
             <p className="text-slate-400 text-[11px]">Cloud Storage Sync</p>
-            <p className="text-sm font-bold text-indigo-300 mt-1">Live All-Device Sync</p>
+            <p className="text-sm font-bold text-indigo-300 mt-1">Global Firestore (All Users)</p>
           </div>
         </div>
       </div>

@@ -206,7 +206,7 @@ async function uploadBlobChunksToFirestore(params: {
     handleFirestoreError(err, OperationType.CREATE, `uploaded_notes/${notePayload.id}`);
   }
 
-  const CHUNKS_PER_BATCH = 4;
+  const CHUNKS_PER_BATCH = 2;
   for (let batchStart = 0; batchStart < totalChunks; batchStart += CHUNKS_PER_BATCH) {
     const batch = writeBatch(db);
     const batchEnd = Math.min(totalChunks, batchStart + CHUNKS_PER_BATCH);
@@ -272,6 +272,10 @@ export async function uploadPdfToCloud(params: {
 
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_BYTE_SIZE));
   onProgress(5, `Preparing ${totalChunks} verbatim PDF chunk(s)...`);
+
+  try {
+    await auth.authStateReady();
+  } catch {}
 
   const firebaseAdminActive = isFirebaseAdminSessionActive();
   if (firebaseAdminActive) {
@@ -375,6 +379,10 @@ export async function uploadPdfToCloud(params: {
     ...cachedList.filter((n) => n.id !== savedNote.id),
   ]);
 
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("prostudymind:pdf-notes-updated", { detail: savedNote }));
+  }
+
   onProgress(100, savedToFirestore ? "Published globally to all devices!" : "Saved to local server!");
   return { note: savedNote, storageBackend, isGlobalCloud: savedToFirestore };
 }
@@ -458,38 +466,60 @@ export function subscribeToPdfNotes(
   onError?: (err: unknown) => void
 ): () => void {
   let active = true;
-  return onSnapshot(
-    collection(db, "uploaded_notes"),
-    async (snap) => {
-      if (!active) return;
-      const byId = new Map<string, UploadedPdfNoteRecord>();
+  const emitMerged = async (firestoreDocs: UploadedPdfNoteRecord[]) => {
+    if (!active) return;
+    const byId = new Map<string, UploadedPdfNoteRecord>();
 
-      // Include any local Express backend notes as secondary source, then overwrite with Firestore authoritative docs
-      const apiRes = await safeJsonFetch<{ success: boolean; notes?: any[] }>("/api/uploaded-notes").catch(
-        () => ({ ok: false as const, data: undefined })
-      );
-      if (apiRes.ok && Array.isArray(apiRes.data?.notes)) {
-        for (const raw of apiRes.data.notes) {
-          const normalized = normalizeUploadedNote(raw);
-          if (normalized) byId.set(normalized.id, normalized);
-        }
-      }
-
-      for (const docSnap of snap.docs) {
-        const normalized = normalizeUploadedNote(docSnap.data());
+    const apiRes = await safeJsonFetch<{ success: boolean; notes?: any[] }>("/api/uploaded-notes").catch(
+      () => ({ ok: false as const, data: undefined })
+    );
+    if (apiRes.ok && Array.isArray(apiRes.data?.notes)) {
+      for (const raw of apiRes.data.notes) {
+        const normalized = normalizeUploadedNote(raw);
         if (normalized) byId.set(normalized.id, normalized);
       }
+    }
 
-      if (!active) return;
-      const sorted = sortUploadedNotes(Array.from(byId.values()));
-      writeLocalCache(LOCAL_UPLOADED_NOTES_CACHE_KEY, sorted);
-      onUpdate(sorted);
+    for (const raw of firestoreDocs) {
+      const normalized = normalizeUploadedNote(raw);
+      if (normalized) byId.set(normalized.id, normalized);
+    }
+
+    if (!active) return;
+    const sorted = sortUploadedNotes(Array.from(byId.values()));
+    writeLocalCache(LOCAL_UPLOADED_NOTES_CACHE_KEY, sorted);
+    onUpdate(sorted);
+  };
+
+  let latestFirestoreDocs: UploadedPdfNoteRecord[] = [];
+  const unsubSnapshot = onSnapshot(
+    collection(db, "uploaded_notes"),
+    async (snap) => {
+      latestFirestoreDocs = snap.docs.map((d) => d.data() as UploadedPdfNoteRecord);
+      await emitMerged(latestFirestoreDocs);
     },
     (err) => {
       console.warn("Firestore live PDF subscription notice:", err);
       onError?.(err);
     }
   );
+
+  const handleLocalEvent = () => {
+    fetchAllPdfNotes().then((list) => {
+      if (active) onUpdate(list);
+    }).catch(() => {});
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("prostudymind:pdf-notes-updated", handleLocalEvent);
+  }
+
+  return () => {
+    active = false;
+    unsubSnapshot();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("prostudymind:pdf-notes-updated", handleLocalEvent);
+    }
+  };
 }
 
 export async function syncLocalPdfToFirestore(
@@ -668,12 +698,16 @@ export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<st
 
 export async function downloadVerbatimPdf(note: UploadedPdfNoteRecord): Promise<void> {
   const url = await resolvePdfViewUrl(note);
+  const downloadHref =
+    url.startsWith("/api/") && !url.includes("download=")
+      ? `${url}${url.includes("?") ? "&" : "?"}download=1`
+      : url;
   const safeName = note.fileName?.toLowerCase().endsWith(".pdf")
     ? note.fileName
     : `${note.title.replace(/[^a-zA-Z0-9._ -]/g, "_")}.pdf`;
 
   const link = document.createElement("a");
-  link.href = url;
+  link.href = downloadHref;
   link.download = safeName;
   document.body.appendChild(link);
   link.click();
@@ -733,6 +767,10 @@ export async function deleteUploadedPdfNote(
     } catch {}
   }
   resolvedBlobCache.delete(note.id);
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("prostudymind:pdf-notes-updated"));
+  }
 
   if (!apiRes.ok && !firestoreDeleted) {
     return {

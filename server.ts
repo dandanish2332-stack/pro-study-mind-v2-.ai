@@ -7368,8 +7368,12 @@ app.get("/api/uploaded-notes/:id/file", (req, res) => {
     const filename = String(note?.fileName || `${note?.title || id}.pdf`).replace(/["\r\n]/g, "");
     const total = buffer.length;
 
+    const isAttachment = req.query.download === "1" || req.query.download === "true";
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader(
+      "Content-Disposition",
+      `${isAttachment ? "attachment" : "inline"}; filename="${filename}"`
+    );
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader("Cache-Control", "public, max-age=3600");
 

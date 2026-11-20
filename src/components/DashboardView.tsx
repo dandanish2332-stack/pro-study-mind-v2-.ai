@@ -165,7 +165,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => (onNavigateToPDFs ? onNavigateToPDFs() : setActiveTab("pdfs"))}
+                onClick={() => setActiveTab("pdfnotes")}
                 className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
               >
                 Open PDF Notes →
@@ -312,7 +312,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
             </div>
           </div>
 
-          {/* 4. AI PDF Notes Generator */}
+          {/* 4. Original Verbatim PDF Notes Mode */}
+          <div
+            onClick={() => setActiveTab("pdfnotes")}
+            className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
+          >
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <FileText className="w-6 h-6" />
+                </div>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 uppercase">
+                  Original PDFs
+                </span>
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                  PDF Notes Mode
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                  Read and download unmodified original PDF study notes published by the Admin for all classes.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
+              <span>Open PDF Notes Mode</span>
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            </div>
+          </div>
+
+          {/* 4B. AI Study Notes & Keys Generator */}
           <div
             onClick={() => (onNavigateToPDFs ? onNavigateToPDFs() : setActiveTab("pdfs"))}
             className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"

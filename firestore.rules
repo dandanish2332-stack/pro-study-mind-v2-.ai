@@ -29,12 +29,12 @@ service cloud.firestore {
     }
 
     function isAdminToken() {
-      return isVerifiedUser() && request.auth.token.email == 'dandanish2332@gmail.com';
+      return isVerifiedUser() && request.auth.token.email.lower() == 'dandanish2332@gmail.com';
     }
 
     function isAdmin() {
       return isVerifiedUser() && (
-        request.auth.token.email == 'dandanish2332@gmail.com' ||
+        request.auth.token.email.lower() == 'dandanish2332@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -233,7 +233,7 @@ service cloud.firestore {
     // Chunked verbatim PDF bytes stored in Firestore (non-PII)
     match /uploaded_pdf_chunks/{chunkId} {
       allow get: if isValidId(chunkId);
-      allow list: if existing().noteId is string;
+      allow list: if true;
       allow create: if isAdmin() && isValidId(chunkId) && isValidUploadedPdfChunk(incoming()) &&
         exists(/databases/$(database)/documents/uploaded_notes/$(incoming().noteId));
       allow update: if false;

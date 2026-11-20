@@ -89,7 +89,12 @@ const AppContent: React.FC = () => {
       case "games":
         return <EducationalGamesView />;
       case "pdfs":
-        return <StudentPDFView initialSubjectFilter={pdfSubjectFilter} />;
+        return (
+          <StudentPDFView
+            initialSubjectFilter={pdfSubjectFilter}
+            onOpenPdfNotesMode={() => setActiveTab("pdfnotes")}
+          />
+        );
       case "pdfnotes":
         return (
           <PdfNotesModeView
@@ -122,7 +127,12 @@ const AppContent: React.FC = () => {
       case "social":
         return <SocialHubView />;
       default:
-        return <StudentPDFView initialSubjectFilter={pdfSubjectFilter} />;
+        return (
+          <StudentPDFView
+            initialSubjectFilter={pdfSubjectFilter}
+            onOpenPdfNotesMode={() => setActiveTab("pdfnotes")}
+          />
+        );
     }
   };
 
