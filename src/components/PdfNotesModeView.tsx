@@ -16,10 +16,12 @@ import {
   Calendar,
   ExternalLink,
   Trash2,
+  Cloud,
 } from "lucide-react";
 import {
   UploadedPdfNoteRecord,
   fetchAllPdfNotes,
+  subscribeToPdfNotes,
   resolvePdfViewUrl,
   downloadVerbatimPdf,
   deleteUploadedPdfNote,
@@ -124,6 +126,11 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
 
   useEffect(() => {
     loadNotes();
+    const unsubscribe = subscribeToPdfNotes((liveNotes) => {
+      setNotes(liveNotes);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
   const showNotice = (msg: string) => {
@@ -279,7 +286,7 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
           </div>
           <div className="p-3 rounded-2xl bg-white/5 border border-white/10">
             <p className="text-slate-400 text-[11px]">Cloud Storage Sync</p>
-            <p className="text-sm font-bold text-indigo-300 mt-1">Firestore + Server</p>
+            <p className="text-sm font-bold text-indigo-300 mt-1">Live All-Device Sync</p>
           </div>
         </div>
       </div>
@@ -435,6 +442,20 @@ export const PdfNotesModeView: React.FC<PdfNotesModeViewProps> = ({ onOpenAdminU
                       <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-cyan-50 dark:bg-cyan-950/70 text-cyan-700 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800/70">
                         {note.subject}
                       </span>
+                      {isAdmin && (
+                        <span
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 border ${
+                            note.storageType === "firestore_chunks" || note.storageType === "firebase_storage"
+                              ? "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/70"
+                              : "bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/70"
+                          }`}
+                        >
+                          <Cloud className="w-3 h-3" />
+                          {note.storageType === "firestore_chunks" || note.storageType === "firebase_storage"
+                            ? "All Devices"
+                            : "Local Only — Sync in Admin Hub"}
+                        </span>
+                      )}
                     </div>
 
                     {isAdmin && (

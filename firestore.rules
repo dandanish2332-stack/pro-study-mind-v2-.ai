@@ -206,7 +206,7 @@ service cloud.firestore {
     // Broadcast announcements (non-PII)
     match /announcements/{announcementId} {
       allow get: if isValidId(announcementId);
-      allow list: if existing().title is string && existing().targetGrade is string;
+      allow list: if true;
       allow create: if isAdmin() && isValidId(announcementId) && isValidAnnouncement(incoming());
       allow update: if isAdmin() && isValidId(announcementId) &&
         isValidAnnouncement(incoming()) &&
@@ -218,7 +218,7 @@ service cloud.firestore {
     // Admin-uploaded PDF study notes metadata (non-PII)
     match /uploaded_notes/{noteId} {
       allow get: if isValidId(noteId);
-      allow list: if existing().subject is string && existing().grade is string;
+      allow list: if true;
       allow create: if isAdmin() && isValidId(noteId) && isValidUploadedNote(incoming()) && incoming().id == noteId;
       allow update: if isAdmin() && isValidId(noteId) &&
         isValidUploadedNote(incoming()) &&

@@ -188,7 +188,588 @@
       "history": []
     },
     "study_streak": 365,
-    "lastUpdated": 1795011085451,
-    "quiz_history": []
+    "lastUpdated": 1795169098908,
+    "quiz_history": [],
+    "custom_pdfs": [],
+    "saved_lectures": [],
+    "watched_lectures": [],
+    "dict_bookmarks": [],
+    "dict_recents": [],
+    "dict_custom_words": [],
+    "games_profile": {
+      "level": 99,
+      "xp": 99999,
+      "xpToNextLevel": 100000,
+      "title": "Grandmaster Platform Architect & Lead Educator",
+      "totalGamesPlayed": 150,
+      "totalCorrect": 450,
+      "highestStreak": 50,
+      "soundEnabled": true,
+      "badges": [
+        {
+          "id": "b-1",
+          "title": "Master Architect",
+          "description": "Created the PRO Study Mind architecture",
+          "category": "Admin",
+          "icon": "👑",
+          "unlocked": true
+        },
+        {
+          "id": "b-2",
+          "title": "Curriculum Lead",
+          "description": "Verified all Class 1-12 curriculum notes",
+          "category": "Academic",
+          "icon": "📚",
+          "unlocked": true
+        },
+        {
+          "id": "b-3",
+          "title": "KaTeX Virtuoso",
+          "description": "Formulated advanced math and science equations",
+          "category": "Math",
+          "icon": "⚛️",
+          "unlocked": true
+        },
+        {
+          "id": "b-4",
+          "title": "Multi-User Guardian",
+          "description": "Ensured 100% multi-user isolation security",
+          "category": "Security",
+          "icon": "🛡️",
+          "unlocked": true
+        }
+      ],
+      "history": []
+    },
+    "notifications": [],
+    "voice_history": [],
+    "chat_history": [
+      {
+        "id": "m-1",
+        "sender": "ai",
+        "text": "Hey, I am an AI agent created by Danish. How can I help you today?",
+        "timestamp": "18:53"
+      }
+    ]
+  },
+  "usr-hamza-101": {
+    "tasks": [
+      {
+        "id": "h-t-1",
+        "title": "Chapter 3 Vectors & Scalar Products Practice",
+        "description": "Solve all textbook board questions for BISE Malakand",
+        "status": "completed",
+        "priority": "high",
+        "category": "Physics",
+        "dueDate": "2026-03-10",
+        "completed": true
+      },
+      {
+        "id": "h-t-2",
+        "title": "Newton's Second Law & Momentum Conservation Derivations",
+        "description": "Write full derivation with F=dp/dt in notebook",
+        "status": "completed",
+        "priority": "urgent",
+        "category": "Physics",
+        "dueDate": "2026-03-12",
+        "completed": true
+      },
+      {
+        "id": "h-t-3",
+        "title": "Work-Energy Principle & Conservative Forces",
+        "description": "Review potential energy curves and gravitational field work",
+        "status": "completed",
+        "priority": "medium",
+        "category": "Physics",
+        "dueDate": "2026-03-14",
+        "completed": true
+      },
+      {
+        "id": "h-t-4",
+        "title": "Rotational Dynamics & Torque Equilibrium Numerical Problems",
+        "description": "Solve numerical problems 5.1 to 5.6",
+        "status": "todo",
+        "priority": "urgent",
+        "category": "Physics",
+        "dueDate": "2026-03-20",
+        "completed": false
+      }
+    ],
+    "files": [
+      {
+        "id": "h-f-1",
+        "name": "Physics_Ch3_Vectors_Equilibrium_Solved.pdf",
+        "size": 79872,
+        "mimeType": "application/pdf",
+        "category": "pdf",
+        "tags": [
+          "Physics",
+          "Class 11",
+          "Vectors"
+        ],
+        "uploadDate": "2 days ago",
+        "contentSnippet": "Vectors and equilibrium solved numericals with KaTeX formulas.",
+        "isEncrypted": false
+      },
+      {
+        "id": "h-f-2",
+        "name": "Voice_Memo_Newton_Laws_Derivation.mp3",
+        "size": 128000,
+        "mimeType": "audio/webm",
+        "category": "audio",
+        "tags": [
+          "Voice Memo",
+          "Physics"
+        ],
+        "uploadDate": "Yesterday",
+        "contentSnippet": "Voice explanation of Newton's second law in terms of momentum.",
+        "isEncrypted": false
+      }
+    ],
+    "calendar": [
+      {
+        "id": "h-c-1",
+        "title": "Physics Vectors Numerical Sprint",
+        "description": "Practice Section C board problems",
+        "startTime": "2026-11-21T10:03:28.448Z",
+        "endTime": "2026-11-21T11:03:28.448Z",
+        "category": "study",
+        "source": "System Calendar",
+        "synced": true
+      }
+    ],
+    "downloaded_pdf_ids": [
+      "pdf-phys-11-01",
+      "pdf-phys-11-02",
+      "pdf-phys-11-03",
+      "pdf-phys-11-04"
+    ],
+    "games_profile": {
+      "level": 3,
+      "xp": 580,
+      "xpToNextLevel": 900,
+      "title": "Physics Apprentice",
+      "totalGamesPlayed": 14,
+      "totalCorrect": 42,
+      "highestStreak": 8,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "study_streak": 5,
+    "quiz_history": [
+      {
+        "id": "hq-1",
+        "topic": "Vectors & Equilibrium",
+        "score": 8,
+        "correctAnswers": 8,
+        "totalQuestions": 10,
+        "percentage": 80,
+        "completedAt": "2026-11-19T10:03:28.448Z"
+      }
+    ],
+    "lastUpdated": 1795169058493,
+    "custom_pdfs": [],
+    "saved_lectures": [],
+    "watched_lectures": [],
+    "dict_bookmarks": [],
+    "dict_recents": [],
+    "dict_custom_words": [],
+    "game_profile": {
+      "level": 3,
+      "xp": 580,
+      "xpToNextLevel": 900,
+      "title": "Physics Apprentice",
+      "totalGamesPlayed": 14,
+      "totalCorrect": 42,
+      "highestStreak": 8,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "notifications": [],
+    "voice_history": [],
+    "chat_history": []
+  },
+  "usr-ayesha-102": {
+    "tasks": [
+      {
+        "id": "a-t-1",
+        "title": "Glycolysis and Krebs Cycle Diagram Memorization",
+        "description": "Draw step-by-step cycle with all intermediate ATP/NADH counts",
+        "status": "completed",
+        "priority": "urgent",
+        "category": "Biology",
+        "dueDate": "2026-03-08",
+        "completed": true
+      },
+      {
+        "id": "a-t-2",
+        "title": "Electron Transport Chain & ATP Synthase Chemiosmosis",
+        "description": "Review proton motive force across inner mitochondrial membrane",
+        "status": "completed",
+        "priority": "high",
+        "category": "Biology",
+        "dueDate": "2026-03-11",
+        "completed": true
+      },
+      {
+        "id": "a-t-3",
+        "title": "MDCAT Biology Enzymes Km & Vmax Kinetics Quiz",
+        "description": "Practice 50 MCQs from past UHS and KMU papers",
+        "status": "completed",
+        "priority": "urgent",
+        "category": "Biology",
+        "dueDate": "2026-03-12",
+        "completed": true
+      },
+      {
+        "id": "a-t-4",
+        "title": "Nervous Coordination: Action Potential & Sodium-Potassium Pump",
+        "description": "Graph depolarization, repolarization, and refractory period",
+        "status": "todo",
+        "priority": "urgent",
+        "category": "Biology",
+        "dueDate": "2026-03-25",
+        "completed": false
+      }
+    ],
+    "files": [
+      {
+        "id": "a-f-1",
+        "name": "MDCAT_Biology_High_Yield_Notes.pdf",
+        "size": 145408,
+        "mimeType": "application/pdf",
+        "category": "pdf",
+        "tags": [
+          "Biology",
+          "MDCAT",
+          "Class 12"
+        ],
+        "uploadDate": "3 days ago",
+        "contentSnippet": "Comprehensive MDCAT Biology formula sheets and high-yield mnemonics.",
+        "isEncrypted": false
+      },
+      {
+        "id": "a-f-2",
+        "name": "Voice_Audio_Summary_Respiration_Cycles.mp3",
+        "size": 98304,
+        "mimeType": "audio/webm",
+        "category": "audio",
+        "tags": [
+          "Voice Memo",
+          "Biology"
+        ],
+        "uploadDate": "Yesterday",
+        "contentSnippet": "Spoken summary of Krebs cycle products and net ATP balance.",
+        "isEncrypted": false
+      }
+    ],
+    "calendar": [
+      {
+        "id": "a-c-1",
+        "title": "MDCAT Biology Mock Test Evaluation",
+        "description": "Review incorrect questions from UHS past paper 2024",
+        "startTime": "2026-11-22T10:03:28.448Z",
+        "endTime": "2026-11-22T12:03:28.448Z",
+        "category": "exam",
+        "source": "System Calendar",
+        "synced": true
+      }
+    ],
+    "downloaded_pdf_ids": [
+      "pdf-bio-11-01",
+      "pdf-bio-11-02",
+      "pdf-bio-11-03",
+      "pdf-bio-12-01",
+      "pdf-bio-12-02",
+      "pdf-chem-12-01"
+    ],
+    "games_profile": {
+      "level": 5,
+      "xp": 1240,
+      "xpToNextLevel": 1500,
+      "title": "Biology Scholar",
+      "totalGamesPlayed": 28,
+      "totalCorrect": 86,
+      "highestStreak": 15,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "study_streak": 9,
+    "quiz_history": [
+      {
+        "id": "aq-1",
+        "topic": "Cellular Respiration & Enzymes",
+        "score": 9,
+        "correctAnswers": 9,
+        "totalQuestions": 10,
+        "percentage": 90,
+        "completedAt": "2026-11-19T22:03:28.448Z"
+      }
+    ],
+    "lastUpdated": 1795169058493,
+    "custom_pdfs": [],
+    "saved_lectures": [],
+    "watched_lectures": [],
+    "dict_bookmarks": [],
+    "dict_recents": [],
+    "dict_custom_words": [],
+    "game_profile": {
+      "level": 5,
+      "xp": 1240,
+      "xpToNextLevel": 1500,
+      "title": "Biology Scholar",
+      "totalGamesPlayed": 28,
+      "totalCorrect": 86,
+      "highestStreak": 15,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "notifications": [],
+    "voice_history": [],
+    "chat_history": []
+  },
+  "usr-bilal-103": {
+    "tasks": [
+      {
+        "id": "b-t-1",
+        "title": "Quadratic Equations Factorization & Completing Square",
+        "description": "Exercise 1.1 BISE Mardan SSC-II",
+        "status": "completed",
+        "priority": "high",
+        "category": "Mathematics",
+        "dueDate": "2026-03-11",
+        "completed": true
+      },
+      {
+        "id": "b-t-2",
+        "title": "Trigonometric Identities Proof Worksheet",
+        "description": "Verify sin^2(x) + cos^2(x) = 1 applications",
+        "status": "todo",
+        "priority": "medium",
+        "category": "Mathematics",
+        "dueDate": "2026-03-21",
+        "completed": false
+      }
+    ],
+    "files": [
+      {
+        "id": "b-f-1",
+        "name": "Class10_Math_Quadratic_Formula_Sheet.pdf",
+        "size": 65536,
+        "mimeType": "application/pdf",
+        "category": "pdf",
+        "tags": [
+          "Mathematics",
+          "Class 10"
+        ],
+        "uploadDate": "4 days ago",
+        "contentSnippet": "Complete quadratic equation discriminant & roots formulas.",
+        "isEncrypted": false
+      }
+    ],
+    "calendar": [],
+    "downloaded_pdf_ids": [
+      "pdf-math-10-01",
+      "pdf-phys-10-01"
+    ],
+    "games_profile": {
+      "level": 2,
+      "xp": 340,
+      "xpToNextLevel": 600,
+      "title": "Math Explorer",
+      "totalGamesPlayed": 9,
+      "totalCorrect": 27,
+      "highestStreak": 6,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "study_streak": 4,
+    "lastUpdated": 1795169058493,
+    "custom_pdfs": [],
+    "saved_lectures": [],
+    "watched_lectures": [],
+    "dict_bookmarks": [],
+    "dict_recents": [],
+    "dict_custom_words": [],
+    "game_profile": {
+      "level": 2,
+      "xp": 340,
+      "xpToNextLevel": 600,
+      "title": "Math Explorer",
+      "totalGamesPlayed": 9,
+      "totalCorrect": 27,
+      "highestStreak": 6,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "quiz_history": [],
+    "notifications": [],
+    "voice_history": [],
+    "chat_history": []
+  },
+  "usr-zainab-104": {
+    "tasks": [
+      {
+        "id": "z-t-1",
+        "title": "Atomic Structure & Electronic Configuration",
+        "description": "Write subshell configurations up to Z=30",
+        "status": "completed",
+        "priority": "high",
+        "category": "Chemistry",
+        "dueDate": "2026-03-12",
+        "completed": true
+      },
+      {
+        "id": "z-t-2",
+        "title": "Chemical Bonding Covalent vs Ionic Properties",
+        "description": "Compare melting points and conductivity",
+        "status": "todo",
+        "priority": "medium",
+        "category": "Chemistry",
+        "dueDate": "2026-03-24",
+        "completed": false
+      }
+    ],
+    "files": [],
+    "calendar": [],
+    "downloaded_pdf_ids": [
+      "pdf-chem-09-01"
+    ],
+    "games_profile": {
+      "level": 2,
+      "xp": 310,
+      "xpToNextLevel": 600,
+      "title": "Science Initiate",
+      "totalGamesPlayed": 7,
+      "totalCorrect": 21,
+      "highestStreak": 5,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "study_streak": 3,
+    "lastUpdated": 1795169058493,
+    "custom_pdfs": [],
+    "saved_lectures": [],
+    "watched_lectures": [],
+    "dict_bookmarks": [],
+    "dict_recents": [],
+    "dict_custom_words": [],
+    "game_profile": {
+      "level": 2,
+      "xp": 310,
+      "xpToNextLevel": 600,
+      "title": "Science Initiate",
+      "totalGamesPlayed": 7,
+      "totalCorrect": 21,
+      "highestStreak": 5,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "quiz_history": [],
+    "notifications": [],
+    "voice_history": [],
+    "chat_history": []
+  },
+  "usr-usman-105": {
+    "tasks": [
+      {
+        "id": "u-t-1",
+        "title": "Organic Chemistry Functional Groups & IUPAC Nomenclature",
+        "description": "Complete all practice structures from Wade & Solomons",
+        "status": "completed",
+        "priority": "urgent",
+        "category": "Chemistry",
+        "dueDate": "2026-03-05",
+        "completed": true
+      },
+      {
+        "id": "u-t-2",
+        "title": "Reaction Kinetics & Rate Law Equations Arrhenius Plot",
+        "description": "Calculate activation energy Ea from slope = -Ea/R",
+        "status": "completed",
+        "priority": "high",
+        "category": "Chemistry",
+        "dueDate": "2026-03-09",
+        "completed": true
+      },
+      {
+        "id": "u-t-3",
+        "title": "Electrochemistry: Galvanic Cells & Nernst Equation",
+        "description": "Solve cell potential E = E0 - (0.0591/n) log Q problems",
+        "status": "todo",
+        "priority": "urgent",
+        "category": "Chemistry",
+        "dueDate": "2026-03-23",
+        "completed": false
+      }
+    ],
+    "files": [
+      {
+        "id": "u-f-1",
+        "name": "Organic_Chemistry_Mechanisms_Summary.pdf",
+        "size": 192512,
+        "mimeType": "application/pdf",
+        "category": "pdf",
+        "tags": [
+          "Chemistry",
+          "MDCAT"
+        ],
+        "uploadDate": "1 day ago",
+        "contentSnippet": "SN1, SN2, E1, and E2 elimination pathways with stereochemistry.",
+        "isEncrypted": false
+      }
+    ],
+    "calendar": [],
+    "downloaded_pdf_ids": [
+      "pdf-chem-11-01",
+      "pdf-chem-11-02",
+      "pdf-chem-12-01",
+      "pdf-chem-12-02",
+      "pdf-phys-12-01"
+    ],
+    "games_profile": {
+      "level": 6,
+      "xp": 1850,
+      "xpToNextLevel": 2100,
+      "title": "MDCAT Chemistry Prodigy",
+      "totalGamesPlayed": 35,
+      "totalCorrect": 110,
+      "highestStreak": 18,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "study_streak": 14,
+    "lastUpdated": 1795169058493,
+    "custom_pdfs": [],
+    "saved_lectures": [],
+    "watched_lectures": [],
+    "dict_bookmarks": [],
+    "dict_recents": [],
+    "dict_custom_words": [],
+    "game_profile": {
+      "level": 6,
+      "xp": 1850,
+      "xpToNextLevel": 2100,
+      "title": "MDCAT Chemistry Prodigy",
+      "totalGamesPlayed": 35,
+      "totalCorrect": 110,
+      "highestStreak": 18,
+      "soundEnabled": true,
+      "badges": [],
+      "history": []
+    },
+    "quiz_history": [],
+    "notifications": [],
+    "voice_history": [],
+    "chat_history": []
   }
 }

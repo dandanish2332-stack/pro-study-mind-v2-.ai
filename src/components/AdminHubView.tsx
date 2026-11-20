@@ -72,6 +72,9 @@ import {
   UploadedPdfNoteRecord,
   uploadPdfToCloud,
   fetchAllPdfNotes,
+  subscribeToPdfNotes,
+  syncLocalPdfToFirestore,
+  syncAllLocalPdfsToFirestore,
   deleteUploadedPdfNote,
   downloadVerbatimPdf,
   ensureAdminFirestoreDoc,
@@ -350,6 +353,8 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
   const [isLoadingUploadedNotes, setIsLoadingUploadedNotes] = useState<boolean>(false);
   const [confirmDeletePdfId, setConfirmDeletePdfId] = useState<string | null>(null);
   const [deletingPdfId, setDeletingPdfId] = useState<string | null>(null);
+  const [syncingPdfId, setSyncingPdfId] = useState<string | null>(null);
+  const [isSyncingAllLocalPdfs, setIsSyncingAllLocalPdfs] = useState<boolean>(false);
   const pdfFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const loadUploadedNotes = useCallback(async () => {
@@ -364,6 +369,11 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
 
   useEffect(() => {
     loadUploadedNotes();
+    const unsubscribe = subscribeToPdfNotes((liveNotes) => {
+      setUploadedNotesHistory(liveNotes);
+      setIsLoadingUploadedNotes(false);
+    });
+    return () => unsubscribe();
   }, [loadUploadedNotes]);
 
   const handleAdminPdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -381,6 +391,30 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     }
   };
 
+  const ensureGoogleAdminForGlobalPublish = async (): Promise<boolean> => {
+    if (isFirebaseAdminSessionActive()) {
+      await ensureAdminFirestoreDoc(true);
+      setCloudAdminActive(true);
+      return true;
+    }
+
+    const res = await googleSignIn({
+      forceConsent: false,
+      includeGmailScopes: false,
+    });
+    if (res.email.toLowerCase() !== "dandanish2332@gmail.com") {
+      const msg = `Signed in as ${res.email}. Master Firestore Admin rules require dandanish2332@gmail.com so everyone on all devices can see uploaded PDFs.`;
+      setCloudSyncError(msg);
+      throw new Error(msg);
+    }
+
+    await ensureAdminFirestoreDoc(true);
+    setCloudAdminActive(true);
+    setGmailAuthEmail(res.email);
+    setCloudSyncError(null);
+    return true;
+  };
+
   const handleAdminPdfUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPdfFile) {
@@ -389,10 +423,17 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     }
 
     setIsUploadingPdf(true);
-    setUploadProgress(5);
-    setUploadStatusText("Starting PDF upload...");
+    setUploadProgress(2);
+    setUploadStatusText("Verifying Global Firestore Admin session...");
 
     try {
+      if (!isFirebaseAdminSessionActive()) {
+        setUploadStatusText("Please complete Google Sign-In (dandanish2332@gmail.com) so everyone can see this PDF...");
+        await ensureGoogleAdminForGlobalPublish();
+      } else {
+        await ensureAdminFirestoreDoc(true);
+      }
+
       const result = await uploadPdfToCloud({
         file: selectedPdfFile,
         title: uploadTitle.trim() || selectedPdfFile.name.replace(/\.pdf$/i, ""),
@@ -409,7 +450,15 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
         },
       });
 
-      showToast(`Uploaded "${result.note.title}" (${result.storageBackend}) — live in PDF Notes Mode!`);
+      if (result.isGlobalCloud) {
+        showToast(`Published "${result.note.title}" globally to Firestore — now visible to everyone on all devices!`);
+      } else {
+        showToast(
+          `Uploaded "${result.note.title}" (${result.storageBackend}). Note: PDFs over 260 MB require backend storage.`,
+          "error"
+        );
+      }
+
       setSelectedPdfFile(null);
       setUploadTitle("");
       setUploadDescription("");
@@ -418,13 +467,60 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
       }
       await loadUploadedNotes();
     } catch (err: any) {
-      showToast(err?.message || "Failed to upload PDF.", "error");
+      showToast(
+        err?.message ||
+          "To show uploaded PDFs to everyone on all devices, please sign in with Google (dandanish2332@gmail.com).",
+        "error"
+      );
     } finally {
       setTimeout(() => {
         setIsUploadingPdf(false);
         setUploadProgress(0);
         setUploadStatusText("");
       }, 600);
+    }
+  };
+
+  const handlePublishSingleLocalPdf = async (note: UploadedPdfNoteRecord) => {
+    setSyncingPdfId(note.id);
+    try {
+      if (!isFirebaseAdminSessionActive()) {
+        await ensureGoogleAdminForGlobalPublish();
+      }
+      await syncLocalPdfToFirestore(note);
+      showToast(`"${note.title}" is now published globally to everyone on all devices!`);
+      await loadUploadedNotes();
+    } catch (err: any) {
+      showToast(err?.message || "Failed to publish PDF globally to Firestore.", "error");
+    } finally {
+      setSyncingPdfId(null);
+    }
+  };
+
+  const handleSyncAllLocalPdfs = async () => {
+    setIsSyncingAllLocalPdfs(true);
+    try {
+      if (!isFirebaseAdminSessionActive()) {
+        await ensureGoogleAdminForGlobalPublish();
+      }
+      const { syncedCount, failedCount } = await syncAllLocalPdfsToFirestore();
+      await loadUploadedNotes();
+      if (syncedCount > 0 && failedCount === 0) {
+        showToast(`Published ${syncedCount} local PDF(s) globally to Firestore — now visible to everyone!`);
+      } else if (syncedCount > 0 && failedCount > 0) {
+        showToast(`Published ${syncedCount} PDF(s) globally; ${failedCount} could not be read from local server.`, "error");
+      } else if (failedCount > 0) {
+        showToast(
+          `Could not migrate ${failedCount} old local record(s) because their PDF file is missing on this server. Please re-upload them.`,
+          "error"
+        );
+      } else {
+        showToast("All uploaded PDFs are already published globally in Firestore!");
+      }
+    } catch (err: any) {
+      showToast(err?.message || "Failed to sync local PDFs to Firestore.", "error");
+    } finally {
+      setIsSyncingAllLocalPdfs(false);
     }
   };
 
@@ -725,12 +821,17 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
       if (isFirebaseAdminSessionActive()) {
         await ensureAdminFirestoreDoc(true);
         setCloudAdminActive(true);
+        const { syncedCount } = await syncAllLocalPdfsToFirestore();
         await Promise.all([
           refreshPlatformSettings(),
           fetchAnnouncements(),
           loadUploadedNotes(),
         ]);
-        showToast("Google Firestore Admin Sync verified & active!");
+        showToast(
+          syncedCount > 0
+            ? `Google Firestore Sync active! Migrated ${syncedCount} local PDF(s) globally for all users.`
+            : "Google Firestore Admin Sync verified & active!"
+        );
         return;
       }
 
@@ -749,12 +850,17 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
       await ensureAdminFirestoreDoc(true);
       setCloudAdminActive(true);
       setGmailAuthEmail(res.email);
+      const { syncedCount } = await syncAllLocalPdfsToFirestore();
       await Promise.all([
         refreshPlatformSettings(),
         fetchAnnouncements(),
         loadUploadedNotes(),
       ]);
-      showToast("Google Firestore Admin Sync activated for live global publishing!");
+      showToast(
+        syncedCount > 0
+          ? `Google Firestore Sync activated & published ${syncedCount} local PDF(s) to everyone!`
+          : "Google Firestore Admin Sync activated for live global publishing!"
+      );
     } catch (err: any) {
       const msg = err?.message || "Could not connect Google Firestore Admin session.";
       setCloudSyncError(msg);
@@ -3749,6 +3855,40 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
               )}
             </div>
 
+            {/* Global All-Device Publishing Indicator */}
+            <div
+              className={`px-4 py-3 rounded-2xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                cloudAdminActive
+                  ? "bg-emerald-950/60 border-emerald-500/40 text-emerald-200"
+                  : "bg-amber-950/60 border-amber-500/50 text-amber-200"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Cloud className={`w-4 h-4 shrink-0 ${cloudAdminActive ? "text-emerald-400" : "text-amber-400"}`} />
+                <span>
+                  {cloudAdminActive ? (
+                    <>
+                      <strong className="text-white">Global All-Device Publishing Active:</strong> Uploaded PDFs are stored directly in Cloud Firestore so every student on every device sees & downloads them immediately.
+                    </>
+                  ) : (
+                    <>
+                      <strong className="text-white">Google Admin Verification Needed for Global Sync:</strong> Click Verify (or submit the upload form) with <span className="font-mono text-amber-300">dandanish2332@gmail.com</span> so PDFs publish globally to everyone instead of only your device.
+                    </>
+                  )}
+                </span>
+              </div>
+              {!cloudAdminActive && (
+                <button
+                  type="button"
+                  onClick={handleActivateGoogleCloudSync}
+                  disabled={isConnectingCloudSync}
+                  className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                >
+                  {isConnectingCloudSync ? "Verifying..." : "Verify Google Sync Now"}
+                </button>
+              )}
+            </div>
+
             <form onSubmit={handleAdminPdfUploadSubmit} className="space-y-4 pt-2">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="space-y-1.5">
@@ -3880,35 +4020,62 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
 
           {/* Uploaded History List */}
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <FileText className="w-4 h-4 text-indigo-500" />
                 Published Original PDF Library ({uploadedNotesHistory.length})
               </h3>
-              <button
-                type="button"
-                onClick={loadUploadedNotes}
-                disabled={isLoadingUploadedNotes}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingUploadedNotes ? "animate-spin" : ""}`} />
-                <span>Refresh</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {uploadedNotesHistory.some(
+                  (n) => n.storageType !== "firestore_chunks" && n.storageType !== "static_asset"
+                ) && (
+                  <button
+                    type="button"
+                    onClick={handleSyncAllLocalPdfs}
+                    disabled={isSyncingAllLocalPdfs}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 text-xs font-bold cursor-pointer"
+                  >
+                    <Cloud className="w-3.5 h-3.5" />
+                    <span>{isSyncingAllLocalPdfs ? "Publishing All..." : "Publish Local PDFs to Everyone"}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={loadUploadedNotes}
+                  disabled={isLoadingUploadedNotes}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingUploadedNotes ? "animate-spin" : ""}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
             </div>
+
+            {uploadedNotesHistory.some(
+              (n) => n.storageType !== "firestore_chunks" && n.storageType !== "static_asset"
+            ) && (
+              <div className="px-4 py-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2.5">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+                <span>
+                  Some older PDFs below were saved only to your local server. Click <strong>Publish to Everyone</strong> to push them to Cloud Firestore so every student on all devices can see them.
+                </span>
+              </div>
+            )}
 
             <div className="space-y-2.5">
               {uploadedNotesHistory.length === 0 ? (
                 <p className="text-xs text-slate-500 py-4 text-center">No PDF notes uploaded yet.</p>
               ) : (
                 uploadedNotesHistory.map((note) => {
+                  const isGlobal = note.storageType === "firestore_chunks" || note.storageType === "firebase_storage";
                   const storageBadge =
                     note.storageType === "firebase_storage"
-                      ? "Firebase Storage"
+                      ? "Firebase Storage (Global)"
                       : note.storageType === "firestore_chunks"
-                      ? "Firestore Chunks"
+                      ? "Global Cloud (All Devices)"
                       : note.storageType === "static_asset"
                       ? "Official Built-In PDF"
-                      : "Backend Server";
+                      : "Local Device Only";
                   const isConfirming = confirmDeletePdfId === note.id;
 
                   return (
@@ -3921,7 +4088,13 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
                             {note.subject} • {note.grade}
                           </span>
-                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              isGlobal
+                                ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300"
+                                : "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300"
+                            }`}
+                          >
                             {storageBadge}
                           </span>
                           <span className="text-[10px] font-mono text-slate-400">
@@ -3932,7 +4105,19 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{note.description}</p>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                        {!isGlobal && note.storageType !== "static_asset" && (
+                          <button
+                            type="button"
+                            onClick={() => handlePublishSingleLocalPdf(note)}
+                            disabled={syncingPdfId === note.id}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            <Cloud className="w-3.5 h-3.5" />
+                            <span>{syncingPdfId === note.id ? "Publishing..." : "Publish to Everyone"}</span>
+                          </button>
+                        )}
+
                         <button
                           type="button"
                           onClick={() => handleDownloadUploadedPdf(note)}

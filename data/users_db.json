@@ -13,8 +13,8 @@
     "provider": "email",
     "joinedDate": "2026-01-01",
     "bio": "Founder, Creator & Master Administrator of PRO Study Mind v2.0. Managing academic excellence, multi-user isolation, and comprehensive exam preparations for students across Pakistan.",
-    "lastLogin": "2026-11-18T14:11:26.031Z",
-    "lastActiveTimestamp": 1795011086031,
+    "lastLogin": "2026-11-20T10:04:23.627Z",
+    "lastActiveTimestamp": 1795169063627,
     "role": "admin",
     "isAdmin": true
   },
@@ -102,5 +102,21 @@
     "lastLogin": "2026-11-10T22:25:54.805Z",
     "lastActiveTimestamp": 1794349554805,
     "role": "student"
+  },
+  {
+    "id": "usr-1795143179324",
+    "name": "danish youafzai",
+    "email": "danihyousafzai24116@gmail.com",
+    "passwordHash": "secret11",
+    "grade": "11th Class",
+    "targetExam": "Annual Board Examinations 2026",
+    "dailyGoalHours": 4,
+    "avatarColor": "from-purple-500 to-indigo-600",
+    "provider": "email",
+    "joinedDate": "2026-11-20",
+    "lastLogin": "2026-11-20T09:45:34.859Z",
+    "lastActiveTimestamp": 1795167934859,
+    "role": "student",
+    "isAdmin": false
   }
 ]

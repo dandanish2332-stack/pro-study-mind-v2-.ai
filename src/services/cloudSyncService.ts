@@ -6,6 +6,7 @@ import {
   setDoc,
   deleteDoc,
   updateDoc,
+  onSnapshot,
   query,
   where,
   increment,
@@ -190,6 +191,51 @@ async function uploadChunksToExpressBackend(params: {
   return { ok: true, note: completeRes.data.note };
 }
 
+async function uploadBlobChunksToFirestore(params: {
+  blob: Blob;
+  notePayload: UploadedPdfNoteRecord;
+  totalChunks: number;
+  onProgress?: (pct: number, statusText: string) => void;
+}): Promise<void> {
+  const { blob, notePayload, totalChunks, onProgress } = params;
+
+  onProgress?.(10, "Registering document metadata globally in Firestore...");
+  try {
+    await setDoc(doc(db, "uploaded_notes", notePayload.id), notePayload);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, `uploaded_notes/${notePayload.id}`);
+  }
+
+  const CHUNKS_PER_BATCH = 4;
+  for (let batchStart = 0; batchStart < totalChunks; batchStart += CHUNKS_PER_BATCH) {
+    const batch = writeBatch(db);
+    const batchEnd = Math.min(totalChunks, batchStart + CHUNKS_PER_BATCH);
+
+    for (let i = batchStart; i < batchEnd; i++) {
+      const start = i * CHUNK_BYTE_SIZE;
+      const end = Math.min(blob.size, start + CHUNK_BYTE_SIZE);
+      const sliceBuffer = await blob.slice(start, end).arrayBuffer();
+      const base64Data = uint8ToBase64(new Uint8Array(sliceBuffer));
+      const chunkDocId = `${notePayload.id}_chunk_${i}`;
+      batch.set(doc(db, "uploaded_pdf_chunks", chunkDocId), {
+        noteId: notePayload.id,
+        chunkIndex: i,
+        totalChunks,
+        data: base64Data,
+      });
+    }
+
+    try {
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `uploaded_pdf_chunks/${notePayload.id}_batch_${batchStart}`);
+    }
+
+    const pct = 12 + Math.round((batchEnd / totalChunks) * 70);
+    onProgress?.(pct, `Uploaded ${batchEnd} of ${totalChunks} chunks globally to Firestore...`);
+  }
+}
+
 export async function uploadPdfToCloud(params: {
   file: File;
   title: string;
@@ -199,7 +245,7 @@ export async function uploadPdfToCloud(params: {
   category?: string;
   pageCount?: number;
   onProgress: (pct: number, statusText: string) => void;
-}): Promise<{ note: UploadedPdfNoteRecord; storageBackend: string }> {
+}): Promise<{ note: UploadedPdfNoteRecord; storageBackend: string; isGlobalCloud: boolean }> {
   const {
     file,
     title,
@@ -262,48 +308,18 @@ export async function uploadPdfToCloud(params: {
       chunkCount: totalChunks,
     };
 
-    onProgress(10, `Registering document metadata in Firestore...`);
-    try {
-      await setDoc(doc(db, "uploaded_notes", noteId), noteDocPayload);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `uploaded_notes/${noteId}`);
-    }
-
-    // Write chunks in parallel batches of 4 per batch for rapid uploads
-    const CHUNKS_PER_BATCH = 4;
-    for (let batchStart = 0; batchStart < totalChunks; batchStart += CHUNKS_PER_BATCH) {
-      const batch = writeBatch(db);
-      const batchEnd = Math.min(totalChunks, batchStart + CHUNKS_PER_BATCH);
-
-      for (let i = batchStart; i < batchEnd; i++) {
-        const start = i * CHUNK_BYTE_SIZE;
-        const end = Math.min(file.size, start + CHUNK_BYTE_SIZE);
-        const sliceBuffer = await file.slice(start, end).arrayBuffer();
-        const base64Data = uint8ToBase64(new Uint8Array(sliceBuffer));
-        const chunkDocId = `${noteId}_chunk_${i}`;
-        batch.set(doc(db, "uploaded_pdf_chunks", chunkDocId), {
-          noteId,
-          chunkIndex: i,
-          totalChunks,
-          data: base64Data,
-        });
-      }
-
-      try {
-        await batch.commit();
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `uploaded_pdf_chunks/${noteId}_batch_${batchStart}`);
-      }
-
-      const pct = 12 + Math.round((batchEnd / totalChunks) * 70);
-      onProgress(pct, `Uploaded ${batchEnd} of ${totalChunks} chunks globally to Firestore...`);
-    }
+    await uploadBlobChunksToFirestore({
+      blob: file,
+      notePayload: noteDocPayload,
+      totalChunks,
+      onProgress,
+    });
 
     savedToFirestore = true;
     storageBackend = "Firestore Global Chunked Storage";
   }
 
-  // 2. Always sync / upload to Express Backend via Chunked API (handles huge files even without Google login)
+  // 2. Always sync / upload to Express Backend via Chunked API (handles huge files & fast HTTP range streaming)
   let serverSavedNote: UploadedPdfNoteRecord | undefined;
   let backendError: string | undefined;
 
@@ -359,8 +375,40 @@ export async function uploadPdfToCloud(params: {
     ...cachedList.filter((n) => n.id !== savedNote.id),
   ]);
 
-  onProgress(100, "Upload complete & published to PDF Notes Mode!");
-  return { note: savedNote, storageBackend };
+  onProgress(100, savedToFirestore ? "Published globally to all devices!" : "Saved to local server!");
+  return { note: savedNote, storageBackend, isGlobalCloud: savedToFirestore };
+}
+
+function normalizeUploadedNote(raw: any): UploadedPdfNoteRecord | null {
+  if (!raw || !raw.id || !raw.title) return null;
+  if (typeof raw.fileUrl === "string" && raw.fileUrl.startsWith("blob:")) return null;
+  return {
+    id: String(raw.id),
+    title: String(raw.title),
+    description: String(raw.description || `Original PDF notes for ${raw.subject || "Study"}`),
+    subject: String(raw.subject || "Physics"),
+    grade: String(raw.grade || "12th Class"),
+    category: String(raw.category || "Complete Study Guide"),
+    fileName: String(raw.fileName || `${raw.title}.pdf`),
+    pageCount: Number(raw.pageCount || 12),
+    fileSizeKb: Number(raw.fileSizeKb || 1024),
+    downloadCount: Number(raw.downloadCount || 0),
+    lastUpdated: String(raw.lastUpdated || new Date().toISOString().split("T")[0]),
+    fileUrl: String(raw.fileUrl || ""),
+    storageType: raw.storageType || "server_api",
+    chunkCount: Number(raw.chunkCount || 0),
+    storagePath: raw.storagePath || undefined,
+    uploadedBy: raw.uploadedBy || "admin0011",
+    tags: Array.isArray(raw.tags) ? raw.tags : [],
+  };
+}
+
+function sortUploadedNotes(list: UploadedPdfNoteRecord[]): UploadedPdfNoteRecord[] {
+  return [...list].sort((a, b) => {
+    const dateDiff = new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    return b.id.localeCompare(a.id);
+  });
 }
 
 export async function fetchAllPdfNotes(): Promise<UploadedPdfNoteRecord[]> {
@@ -379,28 +427,10 @@ export async function fetchAllPdfNotes(): Promise<UploadedPdfNoteRecord[]> {
 
   const processIncoming = (rawList: any[]) => {
     for (const raw of rawList) {
-      if (!raw || !raw.id || !raw.title) continue;
-      if (typeof raw.fileUrl === "string" && raw.fileUrl.startsWith("blob:")) continue;
-      const normalized: UploadedPdfNoteRecord = {
-        id: String(raw.id),
-        title: String(raw.title),
-        description: String(raw.description || `Original PDF notes for ${raw.subject || "Study"}`),
-        subject: String(raw.subject || "Physics"),
-        grade: String(raw.grade || "12th Class"),
-        category: String(raw.category || "Complete Study Guide"),
-        fileName: String(raw.fileName || `${raw.title}.pdf`),
-        pageCount: Number(raw.pageCount || 12),
-        fileSizeKb: Number(raw.fileSizeKb || 1024),
-        downloadCount: Number(raw.downloadCount || 0),
-        lastUpdated: String(raw.lastUpdated || new Date().toISOString().split("T")[0]),
-        fileUrl: String(raw.fileUrl || ""),
-        storageType: raw.storageType || "server_api",
-        chunkCount: Number(raw.chunkCount || 0),
-        storagePath: raw.storagePath || undefined,
-        uploadedBy: raw.uploadedBy || "admin0011",
-        tags: Array.isArray(raw.tags) ? raw.tags : [],
-      };
-      byId.set(normalized.id, normalized);
+      const normalized = normalizeUploadedNote(raw);
+      if (normalized) {
+        byId.set(normalized.id, normalized);
+      }
     }
   };
 
@@ -420,9 +450,150 @@ export async function fetchAllPdfNotes(): Promise<UploadedPdfNoteRecord[]> {
     writeLocalCache(LOCAL_UPLOADED_NOTES_CACHE_KEY, Array.from(byId.values()));
   }
 
-  return Array.from(byId.values()).sort(
-    (a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime()
+  return sortUploadedNotes(Array.from(byId.values()));
+}
+
+export function subscribeToPdfNotes(
+  onUpdate: (notes: UploadedPdfNoteRecord[]) => void,
+  onError?: (err: unknown) => void
+): () => void {
+  let active = true;
+  return onSnapshot(
+    collection(db, "uploaded_notes"),
+    async (snap) => {
+      if (!active) return;
+      const byId = new Map<string, UploadedPdfNoteRecord>();
+
+      // Include any local Express backend notes as secondary source, then overwrite with Firestore authoritative docs
+      const apiRes = await safeJsonFetch<{ success: boolean; notes?: any[] }>("/api/uploaded-notes").catch(
+        () => ({ ok: false as const, data: undefined })
+      );
+      if (apiRes.ok && Array.isArray(apiRes.data?.notes)) {
+        for (const raw of apiRes.data.notes) {
+          const normalized = normalizeUploadedNote(raw);
+          if (normalized) byId.set(normalized.id, normalized);
+        }
+      }
+
+      for (const docSnap of snap.docs) {
+        const normalized = normalizeUploadedNote(docSnap.data());
+        if (normalized) byId.set(normalized.id, normalized);
+      }
+
+      if (!active) return;
+      const sorted = sortUploadedNotes(Array.from(byId.values()));
+      writeLocalCache(LOCAL_UPLOADED_NOTES_CACHE_KEY, sorted);
+      onUpdate(sorted);
+    },
+    (err) => {
+      console.warn("Firestore live PDF subscription notice:", err);
+      onError?.(err);
+    }
   );
+}
+
+export async function syncLocalPdfToFirestore(
+  note: UploadedPdfNoteRecord,
+  onProgress?: (pct: number, statusText: string) => void
+): Promise<UploadedPdfNoteRecord> {
+  if (!isFirebaseAdminSessionActive()) {
+    throw new Error("Please verify Google Admin Sync (dandanish2332@gmail.com) to publish this PDF globally.");
+  }
+
+  await ensureAdminFirestoreDoc(true);
+  onProgress?.(5, `Downloading "${note.title}" from local server for global publishing...`);
+
+  let pdfBlob: Blob | null = null;
+  if (note.fileUrl.startsWith("data:")) {
+    pdfBlob = dataUrlToPdfBlob(note.fileUrl);
+  } else {
+    const fileRes = await fetch(`/api/uploaded-notes/${encodeURIComponent(note.id)}/file`);
+    const contentType = (fileRes.headers.get("content-type") || "").toLowerCase();
+    if (!fileRes.ok || !contentType.includes("application/pdf")) {
+      throw new Error(
+        `Original PDF binary for "${note.title}" is not available on this server. Please re-upload the PDF file directly.`
+      );
+    }
+    pdfBlob = await fileRes.blob();
+  }
+
+  const totalChunks = Math.max(1, Math.ceil(pdfBlob.size / CHUNK_BYTE_SIZE));
+  if (totalChunks > MAX_FIRESTORE_CHUNKS) {
+    throw new Error(`"${note.title}" exceeds the 260 MB Firestore global chunk limit.`);
+  }
+
+  const globalRecord: UploadedPdfNoteRecord = {
+    ...note,
+    fileUrl: `firestore://uploaded_pdf_chunks/${note.id}`,
+    storageType: "firestore_chunks",
+    chunkCount: totalChunks,
+    fileSizeKb: Math.max(1, Math.round(pdfBlob.size / 1024)),
+    uploadedBy: (auth.currentUser?.email || note.uploadedBy || "dandanish2332@gmail.com").slice(0, 128),
+  };
+
+  await uploadBlobChunksToFirestore({
+    blob: pdfBlob,
+    notePayload: globalRecord,
+    totalChunks,
+    onProgress,
+  });
+
+  // Update backend metadata record so Express & Firestore stay aligned
+  await safeJsonFetch("/api/uploaded-notes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(globalRecord),
+  }).catch(() => {});
+
+  const cached = readLocalCache<UploadedPdfNoteRecord[]>(LOCAL_UPLOADED_NOTES_CACHE_KEY, []);
+  writeLocalCache(LOCAL_UPLOADED_NOTES_CACHE_KEY, [
+    globalRecord,
+    ...cached.filter((n) => n.id !== globalRecord.id),
+  ]);
+
+  onProgress?.(100, `Published "${note.title}" globally to all devices!`);
+  return globalRecord;
+}
+
+export async function syncAllLocalPdfsToFirestore(
+  onProgress?: (statusText: string) => void
+): Promise<{ syncedCount: number; failedCount: number }> {
+  if (!isFirebaseAdminSessionActive()) {
+    return { syncedCount: 0, failedCount: 0 };
+  }
+
+  const [apiRes, firestoreSnap] = await Promise.all([
+    safeJsonFetch<{ success: boolean; notes?: any[] }>("/api/uploaded-notes"),
+    getDocs(collection(db, "uploaded_notes")).catch(() => null),
+  ]);
+
+  if (!apiRes.ok || !Array.isArray(apiRes.data?.notes)) {
+    return { syncedCount: 0, failedCount: 0 };
+  }
+
+  const firestoreIds = new Set<string>(
+    firestoreSnap ? firestoreSnap.docs.map((d) => d.id) : []
+  );
+
+  const pendingLocal = apiRes.data.notes
+    .map((n) => normalizeUploadedNote(n))
+    .filter((n): n is UploadedPdfNoteRecord => Boolean(n))
+    .filter((n) => n.storageType !== "static_asset" && (!firestoreIds.has(n.id) || n.storageType !== "firestore_chunks"));
+
+  let syncedCount = 0;
+  let failedCount = 0;
+  for (const note of pendingLocal) {
+    try {
+      onProgress?.(`Publishing local PDF "${note.title}" globally to Firestore...`);
+      await syncLocalPdfToFirestore(note);
+      syncedCount++;
+    } catch (err) {
+      console.warn(`Could not migrate local PDF ${note.id} to Firestore:`, err);
+      failedCount++;
+    }
+  }
+
+  return { syncedCount, failedCount };
 }
 
 export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<string> {
@@ -431,12 +602,13 @@ export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<st
   }
 
   if (note.storageType === "firestore_chunks" || note.fileUrl.startsWith("firestore://")) {
-    // Check if Express server has the binary ready first for fast HTTP Range streaming
+    // Check if Express server has the actual PDF binary ready (verify content-type so SPA HTML fallbacks are ignored)
     try {
       const headRes = await fetch(`/api/uploaded-notes/${encodeURIComponent(note.id)}/file`, {
         method: "HEAD",
       });
-      if (headRes.ok) {
+      const contentType = (headRes.headers.get("content-type") || "").toLowerCase();
+      if (headRes.ok && contentType.includes("application/pdf")) {
         return `/api/uploaded-notes/${encodeURIComponent(note.id)}/file`;
       }
     } catch {}
