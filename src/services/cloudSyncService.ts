@@ -48,8 +48,32 @@ const MAX_FIRESTORE_CHUNKS = 500; // ~262 MB raw PDF capacity
 
 export const BUILT_IN_VERBATIM_PDFS: UploadedPdfNoteRecord[] = [];
 
-// In-memory cache of assembled Blob URLs for chunked PDFs
+// In-memory cache of assembled PDF bytes & Blob URLs for chunked PDFs
+const resolvedBytesCache = new Map<string, Uint8Array>();
 const resolvedBlobCache = new Map<string, string>();
+
+export function assertValidPdfBytes(bytes: Uint8Array): void {
+  if (!bytes || bytes.length < 5) {
+    throw new Error("The PDF file is empty or incomplete.");
+  }
+  const headSlice = bytes.subarray(0, Math.min(bytes.length, 1024));
+  let headText = "";
+  for (let i = 0; i < headSlice.length; i++) {
+    headText += String.fromCharCode(headSlice[i]);
+  }
+  if (headText.includes("%PDF-")) {
+    return;
+  }
+  const lower = headText.trimStart().toLowerCase();
+  if (lower.startsWith("<!doctype") || lower.startsWith("<html") || lower.startsWith("<head") || lower.startsWith("<script")) {
+    throw new Error(
+      "This file contains webpage/HTML data instead of a real PDF document (likely saved from an old redirect or error page). Please delete it and upload the original .pdf file."
+    );
+  }
+  throw new Error(
+    "This file is not a valid PDF document (missing %PDF- signature). Please upload an uncorrupted .pdf file."
+  );
+}
 
 function readLocalCache<T>(key: string, fallback: T): T {
   try {
@@ -270,6 +294,9 @@ export async function uploadPdfToCloud(params: {
     "verbatim_pdf",
   ];
 
+  const headerSlice = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
+  assertValidPdfBytes(headerSlice);
+
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_BYTE_SIZE));
   onProgress(5, `Preparing ${totalChunks} verbatim PDF chunk(s)...`);
 
@@ -405,7 +432,7 @@ function normalizeUploadedNote(raw: any): UploadedPdfNoteRecord | null {
     fileUrl: String(raw.fileUrl || ""),
     storageType: raw.storageType || "server_api",
     chunkCount: Number(raw.chunkCount || 0),
-    storagePath: raw.storagePath || undefined,
+    ...(raw.storagePath ? { storagePath: String(raw.storagePath) } : {}),
     uploadedBy: raw.uploadedBy || "admin0011",
     tags: Array.isArray(raw.tags) ? raw.tags : [],
   };
@@ -626,22 +653,27 @@ export async function syncAllLocalPdfsToFirestore(
   return { syncedCount, failedCount };
 }
 
-export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<string> {
-  if (resolvedBlobCache.has(note.id)) {
-    return resolvedBlobCache.get(note.id)!;
+export async function resolvePdfBytes(note: UploadedPdfNoteRecord): Promise<Uint8Array> {
+  const cachedBytes = resolvedBytesCache.get(note.id);
+  if (cachedBytes) {
+    assertValidPdfBytes(cachedBytes);
+    return cachedBytes;
   }
 
   if (note.storageType === "firestore_chunks" || note.fileUrl.startsWith("firestore://")) {
-    // Check if Express server has the actual PDF binary ready (verify content-type so SPA HTML fallbacks are ignored)
+    // Try Express binary stream first if this container has it in memory/disk
     try {
-      const headRes = await fetch(`/api/uploaded-notes/${encodeURIComponent(note.id)}/file`, {
-        method: "HEAD",
-      });
-      const contentType = (headRes.headers.get("content-type") || "").toLowerCase();
-      if (headRes.ok && contentType.includes("application/pdf")) {
-        return `/api/uploaded-notes/${encodeURIComponent(note.id)}/file`;
+      const apiRes = await fetch(`/api/uploaded-notes/${encodeURIComponent(note.id)}/file`);
+      const contentType = (apiRes.headers.get("content-type") || "").toLowerCase();
+      if (apiRes.ok && contentType.includes("application/pdf")) {
+        const bytes = new Uint8Array(await apiRes.arrayBuffer());
+        assertValidPdfBytes(bytes);
+        resolvedBytesCache.set(note.id, bytes);
+        return bytes;
       }
-    } catch {}
+    } catch {
+      // Fall through to Firestore global chunk reassembly
+    }
 
     const q = query(collection(db, "uploaded_pdf_chunks"), where("noteId", "==", note.id));
     let snap;
@@ -651,15 +683,15 @@ export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<st
       handleFirestoreError(err, OperationType.LIST, `uploaded_pdf_chunks?noteId=${note.id}`);
     }
     if (!snap || snap.empty) {
-      throw new Error("PDF data chunks were not found in Firestore.");
+      throw new Error("PDF data chunks were not found in Cloud Firestore.");
     }
 
     const ordered = snap.docs
-      .map((d) => d.data() as { chunkIndex: number; data: string })
+      .map((d) => d.data() as { chunkIndex: number; totalChunks?: number; data: string })
       .sort((a, b) => a.chunkIndex - b.chunkIndex);
 
-    // Handle both aligned chunks (each multiple of 3 bytes) and legacy unaligned base64 chunks cleanly
-    const parts: ArrayBuffer[] = [];
+    const parts: Uint8Array[] = [];
+    let totalLen = 0;
     let carry = "";
     for (let idx = 0; idx < ordered.length; idx++) {
       let chunkStr = ordered[idx].data || "";
@@ -676,42 +708,70 @@ export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<st
       carry = combined.slice(usableLen);
       if (decodable.length > 0) {
         const bytes = decodeBase64ChunkToUint8(decodable, false);
-        parts.push(bytes.buffer as ArrayBuffer);
+        parts.push(bytes);
+        totalLen += bytes.byteLength;
       }
     }
 
-    const blob = new Blob(parts, { type: "application/pdf" });
-    const objectUrl = URL.createObjectURL(blob);
-    resolvedBlobCache.set(note.id, objectUrl);
-    return objectUrl;
+    const merged = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const part of parts) {
+      merged.set(part, offset);
+      offset += part.byteLength;
+    }
+
+    assertValidPdfBytes(merged);
+    resolvedBytesCache.set(note.id, merged);
+    return merged;
   }
 
   if (note.fileUrl.startsWith("data:")) {
-    const blob = dataUrlToPdfBlob(note.fileUrl);
-    const objectUrl = URL.createObjectURL(blob);
-    resolvedBlobCache.set(note.id, objectUrl);
-    return objectUrl;
+    const bytes = decodeBase64ChunkToUint8(note.fileUrl, true);
+    assertValidPdfBytes(bytes);
+    resolvedBytesCache.set(note.id, bytes);
+    return bytes;
   }
 
-  return note.fileUrl;
+  const res = await fetch(note.fileUrl);
+  if (!res.ok) {
+    throw new Error(`Could not fetch PDF file (HTTP ${res.status}).`);
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  assertValidPdfBytes(bytes);
+  resolvedBytesCache.set(note.id, bytes);
+  return bytes;
+}
+
+export async function resolvePdfViewUrl(note: UploadedPdfNoteRecord): Promise<string> {
+  if (resolvedBlobCache.has(note.id)) {
+    return resolvedBlobCache.get(note.id)!;
+  }
+  const bytes = await resolvePdfBytes(note);
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
+  const objectUrl = URL.createObjectURL(blob);
+  resolvedBlobCache.set(note.id, objectUrl);
+  return objectUrl;
 }
 
 export async function downloadVerbatimPdf(note: UploadedPdfNoteRecord): Promise<void> {
-  const url = await resolvePdfViewUrl(note);
-  const downloadHref =
-    url.startsWith("/api/") && !url.includes("download=")
-      ? `${url}${url.includes("?") ? "&" : "?"}download=1`
-      : url;
+  const bytes = await resolvePdfBytes(note);
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
+  const blobUrl = URL.createObjectURL(blob);
   const safeName = note.fileName?.toLowerCase().endsWith(".pdf")
     ? note.fileName
     : `${note.title.replace(/[^a-zA-Z0-9._ -]/g, "_")}.pdf`;
 
   const link = document.createElement("a");
-  link.href = downloadHref;
+  link.href = blobUrl;
   link.download = safeName;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  setTimeout(() => {
+    try {
+      URL.revokeObjectURL(blobUrl);
+    } catch {}
+  }, 10_000);
 
   // Best-effort download counter increment
   safeJsonFetch(`/api/uploaded-notes/${encodeURIComponent(note.id)}`, {
@@ -766,6 +826,7 @@ export async function deleteUploadedPdfNote(
       URL.revokeObjectURL(existingBlob);
     } catch {}
   }
+  resolvedBytesCache.delete(note.id);
   resolvedBlobCache.delete(note.id);
 
   if (typeof window !== "undefined") {
