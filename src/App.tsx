@@ -36,6 +36,7 @@ const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [adminInitialSection, setAdminInitialSection] = useState<string | undefined>(undefined);
   const [pdfSubjectFilter, setPdfSubjectFilter] = useState<string | null>(null);
+  const [initialPdfNoteId, setInitialPdfNoteId] = useState<string | null>(null);
   const [isNotifModalOpen, setIsNotifModalOpen] = useState<boolean>(false);
   const [isWelcomeSplashOpen, setIsWelcomeSplashOpen] = useState<boolean>(true);
 
@@ -92,12 +93,17 @@ const AppContent: React.FC = () => {
         return (
           <StudentPDFView
             initialSubjectFilter={pdfSubjectFilter}
-            onOpenPdfNotesMode={() => setActiveTab("pdfnotes")}
+            onOpenPdfNotesMode={(noteId) => {
+              if (noteId) setInitialPdfNoteId(noteId);
+              setActiveTab("pdfnotes");
+            }}
           />
         );
       case "pdfnotes":
         return (
           <PdfNotesModeView
+            initialNoteId={initialPdfNoteId}
+            onConsumeInitialNote={() => setInitialPdfNoteId(null)}
             onOpenAdminUpload={() => {
               setAdminInitialSection("pdf-upload");
               setActiveTab("admin");
@@ -130,7 +136,10 @@ const AppContent: React.FC = () => {
         return (
           <StudentPDFView
             initialSubjectFilter={pdfSubjectFilter}
-            onOpenPdfNotesMode={() => setActiveTab("pdfnotes")}
+            onOpenPdfNotesMode={(noteId) => {
+              if (noteId) setInitialPdfNoteId(noteId);
+              setActiveTab("pdfnotes");
+            }}
           />
         );
     }

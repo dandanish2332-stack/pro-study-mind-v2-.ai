@@ -7477,6 +7477,14 @@ app.post("/api/uploaded-notes/upload/complete", (req, res) => {
     if (session && session.chunks.length > 0) {
       const validParts = session.chunks.filter((c): c is Buffer => Buffer.isBuffer(c));
       const fullBuffer = Buffer.concat(validParts);
+      const headerStr = fullBuffer.subarray(0, Math.min(fullBuffer.length, 1024)).toString("utf8");
+      if (!headerStr.includes("%PDF-")) {
+        memStore.pdfUploadSessions.delete(noteId);
+        return res.status(400).json({
+          success: false,
+          error: "Uploaded file is not a valid PDF document (%PDF- header missing).",
+        });
+      }
       memStore.pdfBuffers.set(noteId, fullBuffer);
       try {
         if (!fs.existsSync(UPLOADED_PDF_BLOBS_DIR)) {
@@ -7565,6 +7573,13 @@ app.post("/api/uploaded-notes", (req, res) => {
       const commaIdx = dataUrl.indexOf(",");
       const rawB64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
       const buf = Buffer.from(rawB64, "base64");
+      const headerStr = buf.subarray(0, Math.min(buf.length, 1024)).toString("utf8");
+      if (!headerStr.includes("%PDF-")) {
+        return res.status(400).json({
+          success: false,
+          error: "Uploaded data is not a valid PDF document (%PDF- header missing).",
+        });
+      }
       memStore.pdfBuffers.set(noteId, buf);
       memStore.pdfDataUrls.set(noteId, dataUrl);
       try {

@@ -69,6 +69,7 @@ import {
 } from "../utils/googleAuth";
 import { safeJsonFetch } from "../utils/safeFetch";
 import { auth } from "../firebase";
+import * as pdfjsLib from "pdfjs-dist";
 import {
   UploadedPdfNoteRecord,
   uploadPdfToCloud,
@@ -83,7 +84,13 @@ import {
   deleteAnnouncementFromFirestore,
   fetchAnnouncementsFromFirestore,
   fetchPlatformSettingsFromFirestore,
+  validatePdfBytes,
 } from "../services/cloudSyncService";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.mjs",
+  import.meta.url
+).toString();
 import {
   AdminAuditLog,
   AdminLogsSummary,
@@ -379,17 +386,52 @@ export const AdminHubView: React.FC<AdminHubViewProps> = ({
     return () => unsubscribe();
   }, [loadUploadedNotes]);
 
-  const handleAdminPdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
-        showToast("Please select a valid .pdf file.", "error");
-        e.target.value = "";
+  const handleAdminPdfFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = e.target;
+    const file = inputEl.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      showToast("Please select a valid .pdf file.", "error");
+      inputEl.value = "";
+      return;
+    }
+
+    try {
+      const headerSlice = new Uint8Array(
+        await file.slice(0, Math.min(file.size, 1024)).arrayBuffer()
+      );
+      const check = validatePdfBytes(headerSlice);
+      if (!check.valid) {
+        showToast(check.reason || "Selected file is not a genuine PDF document.", "error");
+        setSelectedPdfFile(null);
+        inputEl.value = "";
         return;
       }
-      setSelectedPdfFile(file);
-      if (!uploadTitle.trim()) {
-        setUploadTitle(file.name.replace(/\.pdf$/i, "").replace(/_/g, " "));
+    } catch {
+      showToast("Could not read the selected PDF file.", "error");
+      inputEl.value = "";
+      return;
+    }
+
+    setSelectedPdfFile(file);
+    if (!uploadTitle.trim()) {
+      setUploadTitle(file.name.replace(/\.pdf$/i, "").replace(/_/g, " "));
+    }
+
+    // Best-effort auto-detect real PDF page count for files up to 40 MB
+    if (file.size <= 40 * 1024 * 1024) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
+        const docProxy = await loadingTask.promise;
+        if (docProxy.numPages > 0) {
+          setUploadPageCount(docProxy.numPages);
+        }
+        await docProxy.cleanup();
+        await loadingTask.destroy();
+      } catch {
+        // Keep manual/default page count if encrypted or complex PDF
       }
     }
   };

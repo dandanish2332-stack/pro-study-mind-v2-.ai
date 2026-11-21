@@ -64,7 +64,7 @@ import {
 interface StudentPDFViewProps {
   initialSubjectFilter?: string | null;
   initialGradeFilter?: string | null;
-  onOpenPdfNotesMode?: () => void;
+  onOpenPdfNotesMode?: (noteId?: string) => void;
 }
 
 interface ReviewQuestion {
@@ -971,7 +971,7 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
             {onOpenPdfNotesMode && (
               <button
                 type="button"
-                onClick={onOpenPdfNotesMode}
+                onClick={() => onOpenPdfNotesMode()}
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 cursor-pointer transition-colors"
               >
                 <span>Open Full PDF Notes Mode</span>
@@ -1007,7 +1007,7 @@ export const StudentPDFView: React.FC<StudentPDFViewProps> = ({
                   {onOpenPdfNotesMode && (
                     <button
                       type="button"
-                      onClick={onOpenPdfNotesMode}
+                      onClick={() => onOpenPdfNotesMode(upPdf.id)}
                       className="flex-1 py-1.5 px-2.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-[11px] font-bold cursor-pointer"
                     >
                       Read in PDF Mode

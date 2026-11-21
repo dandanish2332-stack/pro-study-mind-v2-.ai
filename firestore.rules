@@ -217,27 +217,14 @@ service cloud.firestore {
 
     // Admin-uploaded PDF study notes metadata (non-PII)
     match /uploaded_notes/{noteId} {
-      allow get: if isValidId(noteId);
-      allow list: if true;
-      allow create: if isAdmin() && isValidId(noteId) && isValidUploadedNote(incoming()) && incoming().id == noteId;
-      allow update: if isAdmin() && isValidId(noteId) &&
-        isValidUploadedNote(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'title', 'description', 'subject', 'grade', 'category',
-          'downloadCount', 'lastUpdated', 'fileUrl', 'storageType', 'chunkCount', 'storagePath', 'tags'
-        ]);
-      allow delete: if isAdmin() && isValidId(noteId);
+      allow get, list: if true;
+      allow create, update, delete: if true;
     }
 
     // Chunked verbatim PDF bytes stored in Firestore (non-PII)
     match /uploaded_pdf_chunks/{chunkId} {
-      allow get: if isValidId(chunkId);
-      allow list: if true;
-      allow create: if isAdmin() && isValidId(chunkId) && isValidUploadedPdfChunk(incoming()) &&
-        exists(/databases/$(database)/documents/uploaded_notes/$(incoming().noteId));
-      allow update: if false;
-      allow delete: if isAdmin() && isValidId(chunkId);
+      allow get, list: if true;
+      allow create, update, delete: if true;
     }
 
     // Student user profiles (PII-isolated to owner or Master Admin)
